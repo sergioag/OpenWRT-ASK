@@ -406,3 +406,20 @@ define Device/traverse_ten64_mtd
 endef
 TARGET_DEVICES += traverse_ten64_mtd
 
+define Device/mono_gateway-dk
+  DEVICE_VENDOR := Mono Technologies Inc.
+  DEVICE_MODEL := Gateway Development Kit
+  DEVICE_DTS := mono-gateway-dk-sdk
+  FILESYSTEMS := ext4
+  IMAGES := rootfs.ext4
+  IMAGE/rootfs.ext4 := append-rootfs | pad-rootfs
+  DEVICE_PACKAGES += \
+    kmod-ask-cdx \
+    kmod-ask-fci \
+    kmod-ask-auto-bridge \
+    ask-cmm \
+    ask-dpa-app \
+    kmod-hwmon-ina2xx
+endef
+TARGET_DEVICES += mono_gateway-dk
+
