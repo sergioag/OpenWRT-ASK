@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=fmlib
-PKG_VERSION:=lf-6.12.49
+PKG_VERSION:=6.12.49
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
@@ -57,10 +57,11 @@ endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/fmd
-	$(CP) $(PKG_INSTALL_DIR)/usr/include/fmd/*.h $(1)/usr/include/fmd/
+	$(CP) $(PKG_INSTALL_DIR)/usr/include/fmd/* $(1)/usr/include/fmd/
 
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libfm-arm.a $(1)/usr/lib/
+	ln -sf libfm-arm.a $(1)/usr/lib/libfm.a
 endef
 
 define Package/fmlib/install

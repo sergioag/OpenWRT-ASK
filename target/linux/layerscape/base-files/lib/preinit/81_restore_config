@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# Restore sysupgrade config backup from NOR flash (mtd5)
+# Only runs on Mono Gateway devices
+#
+
+do_restore_config_nor() {
+	local mtdblock="/dev/mtdblock5"
+	local mtd="/dev/mtd5"
+
+	# Only run on Mono Gateway
+	[ -e /tmp/sysinfo/board_name ] || return
+	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+		mono,*)
+			;;
+		*)
+			return
+			;;
+	esac
+
+	[ -e "$mtdblock" ] || return
+
+	# Check for magic header "CFGB"
+	local magic=$(dd if="$mtdblock" bs=4 count=1 2>/dev/null)
+	[ "$magic" = "CFGB" ] || return
+
+	# Read size (4 bytes, little-endian)
+	local b0 b1 b2 b3 size
+	b0=$(dd if="$mtdblock" bs=1 skip=4 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+	b1=$(dd if="$mtdblock" bs=1 skip=5 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+	b2=$(dd if="$mtdblock" bs=1 skip=6 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+	b3=$(dd if="$mtdblock" bs=1 skip=7 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+	size=$((b0 + b1 * 256 + b2 * 65536 + b3 * 16777216))
+
+	[ "$size" -gt 0 ] && [ "$size" -lt 4194304 ] || {
+		echo "Invalid config backup size: $size"
+		return
+	}
+
+	echo "Restoring config from NOR flash ($size bytes)..."
+
+	# Extract and restore config
+	dd if="$mtdblock" bs=1 skip=8 count="$size" 2>/dev/null | tar xzf - -C /
+
+	# Erase NOR flash to prevent re-restore on next boot
+	mtd erase "$mtd" 2>/dev/null
+
+	echo "Config restored successfully"
+}
+
+boot_hook_add preinit_main do_restore_config_nor

@@ -1,11 +1,21 @@
 do_sysinfo_layerscape_fixup() {
 	[ -e /tmp/sysinfo/board_name ] || return
 	[ -e /proc/cmdline ] || return
+
+	board="$(strings /tmp/sysinfo/board_name)"
+
+	# Mono Gateway boots only from eMMC, no suffix needed
+	case "$board" in
+		mono,*)
+			return
+			;;
+	esac
+
+	# NXP reference boards: add -sdboot suffix for SD/eMMC boot
 	cmdline=$(strings /proc/cmdline)
 	case "${cmdline}" in
 		*root=/dev/mmcblk*)
-			board="$(strings /tmp/sysinfo/board_name)-sdboot"
-			echo ${board} > /tmp/sysinfo/board_name
+			echo "${board}-sdboot" > /tmp/sysinfo/board_name
 		;;
 	esac
 }

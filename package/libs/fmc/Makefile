@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fmc
-PKG_VERSION:=lf-6.12.49
+PKG_VERSION:=6.12.49
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
@@ -20,13 +20,15 @@ PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 
+PKG_BUILD_DEPENDS:=tclap
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/fmc
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=NXP Frame Manager Configuration tool
-  DEPENDS:=@TARGET_layerscape +libxml2 +fmlib +tclap
+  DEPENDS:=@TARGET_layerscape +libxml2 +fmlib +libstdcpp
   URL:=https://github.com/nxp-qoriq/fmc
 endef
 
@@ -35,11 +37,11 @@ define Package/fmc/description
   and applies FMan hardware configurations from XML policy files.
 endef
 
-# Convert CRLF to LF (upstream has Windows line endings)
+# Convert CRLF to LF before patching (upstream has Windows line endings)
 define Build/Prepare
-	$(call Build/Prepare/Default)
-	find $(PKG_BUILD_DIR)/source -name "*.cpp" -o -name "*.h" -o -name "*.c" | \
-		xargs -r sed -i 's/\r$$//'
+	$(PKG_UNPACK)
+	find $(PKG_BUILD_DIR)/source -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.c" \) -exec perl -pi -e 's/\r\n/\n/g' {} +
+	$(Build/Patch)
 endef
 
 MAKE_FLAGS += \

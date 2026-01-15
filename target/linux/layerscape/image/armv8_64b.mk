@@ -410,16 +410,28 @@ define Device/mono_gateway-dk
   DEVICE_VENDOR := Mono Technologies Inc.
   DEVICE_MODEL := Gateway Development Kit
   DEVICE_DTS := mono-gateway-dk-sdk
+  KERNEL_LOADADDR := 0x80000000
+  KERNEL := kernel-bin | gzip | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
   FILESYSTEMS := ext4
-  IMAGES := rootfs.ext4
-  IMAGE/rootfs.ext4 := append-rootfs | pad-rootfs
+  IMAGES := rootfs.ext4 sysupgrade.bin
+  IMAGE/rootfs.ext4 := mono-mkfs-ext4 | mono-add-kernel
+  IMAGE/sysupgrade.bin := mono-mkfs-ext4 | mono-add-kernel | sysupgrade-tar rootfs | append-metadata
+  SUPPORTED_DEVICES := mono,gateway-dk
   DEVICE_PACKAGES += \
     kmod-ask-cdx \
     kmod-ask-fci \
     kmod-ask-auto-bridge \
     ask-cmm \
     ask-dpa-app \
-    kmod-hwmon-ina2xx
+    kmod-leds-lp5812 \
+    kmod-i2c-mux-pca954x \
+    kmod-hwmon-ina2xx \
+    kmod-hwmon-tmp421 \
+    kmod-thermal \
+    kmod-rtc-pcf2127 \
+    kmod-sfp \
+    kmod-sfp-led \
+    kmod-leds-gpio
 endef
 TARGET_DEVICES += mono_gateway-dk
 
