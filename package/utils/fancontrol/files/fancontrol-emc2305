@@ -1,0 +1,66 @@
+#!/bin/sh
+# Simple fan control for EMC2305 (no pwm_enable support)
+# Reads cluster_thermal temperature and sets PWM linearly
+
+INTERVAL=10
+MINTEMP=40
+MAXTEMP=80
+MINPWM=34
+MAXPWM=255
+
+# Find hwmon devices by name
+find_hwmon() {
+    local name="$1"
+    for h in /sys/class/hwmon/hwmon*; do
+        [ -f "$h/name" ] && [ "$(cat "$h/name")" = "$name" ] && echo "$h" && return
+    done
+}
+
+TEMP_HWMON=$(find_hwmon "cluster_thermal")
+FAN_HWMON=$(find_hwmon "emc2305")
+
+if [ -z "$TEMP_HWMON" ] || [ -z "$FAN_HWMON" ]; then
+    echo "Error: Could not find hwmon devices"
+    echo "  cluster_thermal: $TEMP_HWMON"
+    echo "  emc2305: $FAN_HWMON"
+    exit 1
+fi
+
+TEMP_INPUT="$TEMP_HWMON/temp1_input"
+PWM1="$FAN_HWMON/pwm1"
+PWM2="$FAN_HWMON/pwm2"
+
+echo "Fan control started"
+echo "  Temperature: $TEMP_INPUT"
+echo "  PWM outputs: $PWM1, $PWM2"
+echo "  Range: ${MINTEMP}°C (PWM $MINPWM) - ${MAXTEMP}°C (PWM $MAXPWM)"
+
+while true; do
+    # Read temperature in millidegrees, convert to degrees
+    temp_raw=$(cat "$TEMP_INPUT" 2>/dev/null)
+    if [ -z "$temp_raw" ]; then
+        echo "Error reading temperature, setting fans to max"
+        echo $MAXPWM > "$PWM1"
+        echo $MAXPWM > "$PWM2"
+        sleep $INTERVAL
+        continue
+    fi
+
+    temp=$((temp_raw / 1000))
+
+    # Calculate PWM
+    if [ $temp -le $MINTEMP ]; then
+        pwm=$MINPWM
+    elif [ $temp -ge $MAXTEMP ]; then
+        pwm=$MAXPWM
+    else
+        # Linear interpolation
+        pwm=$(( MINPWM + (temp - MINTEMP) * (MAXPWM - MINPWM) / (MAXTEMP - MINTEMP) ))
+    fi
+
+    # Apply PWM to both fans
+    echo $pwm > "$PWM1" 2>/dev/null
+    echo $pwm > "$PWM2" 2>/dev/null
+
+    sleep $INTERVAL
+done

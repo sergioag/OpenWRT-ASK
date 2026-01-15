@@ -33,6 +33,16 @@ platform_do_upgrade_sdboot() {
 
 }
 
+platform_do_upgrade_emmc() {
+	local tar_file="$1"
+	local board_dir=$(tar tf $tar_file | grep -m 1 '^sysupgrade-.*/$')
+	board_dir=${board_dir%/}
+
+	echo "Writing rootfs to /dev/mmcblk0p1..."
+	tar xf $tar_file ${board_dir}/root -O | dd of=/dev/mmcblk0p1 bs=512k conv=fsync
+	echo "Upgrade complete"
+}
+
 platform_do_upgrade_traverse_slotubi() {
 	part="$(awk -F 'ubi.mtd=' '{printf $2}' /proc/cmdline | sed -e 's/ .*$//')"
 	echo "Active boot slot: ${part}"
@@ -67,6 +77,33 @@ platform_copy_config_sdboot() {
 		umount /mnt
 	fi
 }
+
+platform_copy_config_nor() {
+	local mtd_dev="/dev/mtd5"
+	local backup_file="$UPGRADE_BACKUP"
+
+	[ -f "$backup_file" ] || {
+		echo "No backup file found"
+		return 1
+	}
+
+	local size=$(stat -c %s "$backup_file")
+
+	echo "Saving config backup to NOR flash ($size bytes)..."
+
+	# Create header: magic "CFGB" + 4-byte little-endian size
+	{
+		printf 'CFGB'
+		printf "\\x$(printf '%02x' $((size & 0xff)))"
+		printf "\\x$(printf '%02x' $(((size >> 8) & 0xff)))"
+		printf "\\x$(printf '%02x' $(((size >> 16) & 0xff)))"
+		printf "\\x$(printf '%02x' $(((size >> 24) & 0xff)))"
+		cat "$backup_file"
+	} | mtd write - "$mtd_dev"
+
+	echo "Config backup saved to NOR flash"
+}
+
 platform_copy_config() {
 	local board=$(board_name)
 
@@ -81,6 +118,9 @@ platform_copy_config() {
 	fsl,ls1088a-rdb-sdboot | \
 	fsl,lx2160a-rdb-sdboot)
 		platform_copy_config_sdboot
+		;;
+	mono,gateway-dk)
+		platform_copy_config_nor
 		;;
 	esac
 }
@@ -110,7 +150,8 @@ platform_check_image() {
 	fsl,ls1088a-rdb-sdboot | \
 	fsl,ls2088a-rdb | \
 	fsl,lx2160a-rdb | \
-	fsl,lx2160a-rdb-sdboot)
+	fsl,lx2160a-rdb-sdboot | \
+	mono,gateway-dk)
 		return 0
 		;;
 	*)
@@ -154,6 +195,10 @@ platform_do_upgrade() {
 	fsl,ls1088a-rdb-sdboot | \
 	fsl,lx2160a-rdb-sdboot)
 		platform_do_upgrade_sdboot "$1"
+		return 0
+		;;
+	mono,gateway-dk)
+		platform_do_upgrade_emmc "$1"
 		return 0
 		;;
 	*)

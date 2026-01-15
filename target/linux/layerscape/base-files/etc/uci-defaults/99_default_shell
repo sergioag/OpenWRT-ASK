@@ -1,0 +1,6 @@
+#!/bin/sh
+# Set bash as default shell for root user
+
+[ -x /bin/bash ] && sed -i 's|root:/bin/ash|root:/bin/bash|' /etc/passwd
+
+exit 0

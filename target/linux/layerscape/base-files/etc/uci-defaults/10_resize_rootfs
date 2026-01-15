@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Expand root partition and filesystem to fill the eMMC.
+# Runs in two phases: first expands partition, then after reboot resizes filesystem.
+#
+
+DISK=/dev/mmcblk0
+PART=${DISK}p1
+
+# Only run on Mono Gateway
+if ! grep -q "mono,gateway-dk" /sys/firmware/devicetree/base/compatible 2>/dev/null; then
+	exit 0
+fi
+
+# Check if tools are available
+command -v sfdisk >/dev/null || {
+	logger -t resize_rootfs "sfdisk not found, skipping resize"
+	exit 0
+}
+
+command -v resize2fs >/dev/null || {
+	logger -t resize_rootfs "resize2fs not found, skipping resize"
+	exit 0
+}
+
+# Get partition layout from sfdisk
+PART_END=$(sfdisk -l $DISK 2>/dev/null | grep "${PART}" | awk '{print $3}')
+DISK_END=$(sfdisk -l $DISK 2>/dev/null | grep "^Disk ${DISK}:" | awk '{print $7}')
+
+if [ -z "$PART_END" ] || [ -z "$DISK_END" ]; then
+	logger -t resize_rootfs "Could not determine disk layout"
+	exit 0
+fi
+
+# Check if partition needs expansion (more than 100MB remaining)
+REMAINING=$(( (DISK_END - PART_END) * 512 / 1024 / 1024 ))
+
+if [ "$REMAINING" -gt 100 ]; then
+	# Partition needs expansion
+	logger -t resize_rootfs "Expanding partition (${REMAINING}MB available)"
+	echo ", +" | sfdisk -N 1 $DISK --no-reread 2>/dev/null
+
+	# Try to update kernel partition table
+	partprobe $DISK 2>/dev/null || partx -u $DISK 2>/dev/null || true
+
+	# Try resize - if kernel saw the change, this will work
+	if resize2fs $PART 2>/dev/null; then
+		logger -t resize_rootfs "Partition expanded and filesystem resized"
+		exit 0
+	fi
+
+	# Kernel didn't see new partition size - need reboot
+	logger -t resize_rootfs "Partition expanded, reboot required for filesystem resize"
+	exit 1
+fi
+
+# Partition is at max - try to resize filesystem (may have been expanded in previous boot)
+logger -t resize_rootfs "Partition at max, attempting filesystem resize"
+if resize2fs $PART 2>&1 | grep -q "is already"; then
+	logger -t resize_rootfs "Filesystem already at maximum size"
+	exit 0
+fi
+
+resize2fs $PART
+logger -t resize_rootfs "Filesystem expanded successfully"
+exit 0

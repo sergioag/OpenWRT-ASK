@@ -13,8 +13,8 @@ PKG_VERSION:=6.02.0
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK.git
-PKG_SOURCE_VERSION:=beefead3fc638a79e16c237c99182628f8b96cc9
+PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK
+PKG_SOURCE_VERSION:=mono-patched
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
@@ -44,6 +44,7 @@ define Build/Compile
 		M="$(BRIDGE_DIR)" \
 		PLATFORM=LS1043A \
 		ENABLE_VLAN_FILTER=y \
+		KERNEL_SRC="$(LINUX_DIR)" \
 		modules
 endef
 

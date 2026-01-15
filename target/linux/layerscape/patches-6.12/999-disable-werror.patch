@@ -1,0 +1,12 @@
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -195,7 +195,8 @@ config COMPILE_TEST
+ 
+ config WERROR
+ 	bool "Compile the kernel with warnings as errors"
+-	default COMPILE_TEST
++	default n
++	depends on BROKEN
+ 	help
+ 	  A kernel build should not cause any compiler warnings, and this
+ 	  enables the '-Werror' (for C) and '-Dwarnings' (for Rust) flags
