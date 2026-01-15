@@ -1,25 +1,5 @@
-From: Tomaz Zaman <tzaman@zaman.io>
-Date: Mon, 12 Jan 2026 16:33:25 +0100
-Subject: [PATCH] ASK (Application Solutions Kit) network offload extensions
- for kernel 6.12
-
-Port of NXP LSDK 5.4.3 ASK features to kernel 6.12.y:
-- Fast path offloading for IPv4/IPv6
-- IPsec hardware acceleration
-- QoS and traffic shaping extensions
-- Bridge fast path hooks
-- DPAA WiFi integration hooks
-- Netfilter conntrack extensions
-- External hash table support (USE_ENHANCED_EHASH) for DDR-based hash tables
-
-Fixed: Route FM_PCD_HashTableSet to ExternalHashTableSet when USE_ENHANCED_EHASH
-is defined, avoiding MURAM exhaustion and nibble-0 mask restrictions.
-
-Upstream-Status: Inappropriate [NXP vendor-specific extension]
-Signed-off-by: Tomaz Zaman <tomaz@mono.si>
-
 diff --git a/Makefile b/Makefile
-index 66ae67c52da8..a1d4113d3f65 100644
+index 9fdb63c5f39c..97556eeb578a 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -130,6 +130,11 @@ export KBUILD_CLIPPY
@@ -110,7 +90,7 @@ index bb6693e2d702..a14b325f2b4b 100644
  config FSL_DPAA_CS_THRESHOLD_1G
  	hex "Egress congestion threshold on 1G ports"
 diff --git a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
-index 010b47239ccc..3b7a20e924d9 100644
+index 010b47239ccc..21e72f218b06 100644
 --- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
 +++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
 @@ -300,7 +300,7 @@ static void _dpa_tx_error(struct net_device		*net_dev,
@@ -122,27 +102,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  				fd->status & FM_FD_STAT_TX_ERRORS);
  #ifdef CONFIG_FSL_DPAA_HOOKS
  	if (dpaa_eth_hooks.tx_error &&
-@@ -347,10 +347,16 @@ void __hot _dpa_process_parse_results(const fm_prs_result_t *parse_results,
- 				      bool dcl4c_valid)
- {
- 	if (dcl4c_valid && fd->status & FM_FD_STAT_L4CV) {
--		/* The parser has run and performed L4 checksum validation.
--		 * We know there were no parser errors (and implicitly no
--		 * L4 csum error), otherwise we wouldn't be here.
-+		/* FM_FD_STAT_L4CV only indicates validation was ATTEMPTED.
-+		 * We must also verify parse_results->cksum == 0xFFFF to
-+		 * confirm the checksum actually PASSED.
- 		 */
-+		if (parse_results->cksum != DPA_CSUM_VALID) {
-+			/* Checksum validation failed - use software checksum */
-+			skb->ip_summed = CHECKSUM_NONE;
-+			*use_gro = false;
-+			return;
-+		}
- 		skb->ip_summed = CHECKSUM_UNNECESSARY;
- 
- 		/* Don't go through GRO for certain types of traffic that
-@@ -446,11 +452,13 @@ priv_rx_error_dqrr(struct qman_portal		*portal,
+@@ -446,11 +446,13 @@ priv_rx_error_dqrr(struct qman_portal		*portal,
  
  	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
  	count_ptr = raw_cpu_ptr(priv->percpu_count);
@@ -158,7 +118,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  		/* Unable to refill the buffer pool due to insufficient
  		 * system memory. Just release the frame back into the pool,
  		 * otherwise we'll soon end up with an empty buffer pool.
-@@ -484,12 +492,15 @@ priv_rx_default_dqrr(struct qman_portal		*portal,
+@@ -484,12 +486,15 @@ priv_rx_default_dqrr(struct qman_portal		*portal,
  	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
  	count_ptr = raw_cpu_ptr(priv->percpu_count);
  
@@ -175,7 +135,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  		/* Unable to refill the buffer pool due to insufficient
  		 * system memory. Just release the frame back into the pool,
  		 * otherwise we'll soon end up with an empty buffer pool.
-@@ -515,9 +526,10 @@ priv_tx_conf_error_dqrr(struct qman_portal		*portal,
+@@ -515,9 +520,10 @@ priv_tx_conf_error_dqrr(struct qman_portal		*portal,
  	priv = netdev_priv(net_dev);
  
  	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
@@ -187,7 +147,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  
  	_dpa_tx_error(net_dev, priv, percpu_priv, &dq->fd, fq->fqid);
  
-@@ -541,10 +553,10 @@ priv_tx_conf_default_dqrr(struct qman_portal		*portal,
+@@ -541,10 +547,10 @@ priv_tx_conf_default_dqrr(struct qman_portal		*portal,
  
  	/* Non-migratable context, safe to use raw_cpu_ptr */
  	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
@@ -200,15 +160,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  	_dpa_tx_conf(net_dev, priv, percpu_priv, &dq->fd, fq->fqid);
  
  	return qman_cb_dqrr_consume;
-@@ -691,6 +703,7 @@ static const struct net_device_ops dpa_private_ops = {
- 	.ndo_poll_controller = dpaa_eth_poll_controller,
- #endif
- 	.ndo_set_features = dpa_set_features,
-+	.ndo_fix_features = dpa_fix_features,
- };
- 
- static int dpa_private_napi_add(struct net_device *net_dev)
-@@ -766,6 +779,11 @@ static int dpa_private_netdev_init(struct net_device *net_dev)
+@@ -766,6 +772,11 @@ static int dpa_private_netdev_init(struct net_device *net_dev)
  	net_dev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
  				NETIF_F_RXCSUM;
  	net_dev->lltx               = true;
@@ -220,7 +172,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  
  	/* Advertise S/G and HIGHDMA support for private interfaces */
  	net_dev->hw_features |= NETIF_F_SG | NETIF_F_HIGHDMA;
-@@ -892,7 +910,8 @@ static void dpa_priv_bp_seed(struct net_device *net_dev)
+@@ -892,7 +903,8 @@ static void dpa_priv_bp_seed(struct net_device *net_dev)
  		 */
  		int *count_ptr = per_cpu_ptr(priv->percpu_count, i);
  
@@ -230,7 +182,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  	}
  }
  
-@@ -1005,9 +1024,12 @@ dpaa_eth_priv_probe(struct platform_device *_of_dev)
+@@ -1005,9 +1017,12 @@ dpaa_eth_priv_probe(struct platform_device *_of_dev)
  
  	if (err < 0)
  		goto fq_probe_failed;
@@ -245,7 +197,7 @@ index 010b47239ccc..3b7a20e924d9 100644
  	err = dpa_priv_bp_create(net_dev, dpa_bp, count);
  
  	if (err < 0)
-@@ -1111,6 +1133,8 @@ dpaa_eth_priv_probe(struct platform_device *_of_dev)
+@@ -1111,6 +1126,8 @@ dpaa_eth_priv_probe(struct platform_device *_of_dev)
  	device_set_wakeup_capable(dev, true);
  #endif
  
@@ -341,7 +293,7 @@ index f947264bf54d..05cf73183818 100644
  	net_dev = ceetm_fq->net_dev;
  	dpa_priv = netdev_priv(net_dev);
 diff --git a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c
-index 515dfb68ed5f..b7a9536070cf 100644
+index 515dfb68ed5f..8e20f2348668 100644
 --- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c
 +++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c
 @@ -166,6 +166,7 @@ int __cold dpa_start(struct net_device *net_dev)
@@ -361,32 +313,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  	netif_tx_stop_all_queues(net_dev);
  	/* Allow the Fman (Tx) port to process in-flight frames before we
  	 * try switching it off.
-@@ -297,6 +300,24 @@ int dpa_set_features(struct net_device *dev, netdev_features_t features)
- }
- EXPORT_SYMBOL(dpa_set_features);
- 
-+netdev_features_t dpa_fix_features(struct net_device *dev,
-+				   netdev_features_t features)
-+{
-+	netdev_features_t unsupported_features = 0;
-+
-+	/* In theory we should never be requested to enable features that
-+	 * we didn't set in netdev->features and netdev->hw_features at probe
-+	 * time, but double check just to be on the safe side.
-+	 * We don't support enabling Rx csum through ethtool yet
-+	 */
-+	unsupported_features |= NETIF_F_RXCSUM;
-+
-+	features &= ~unsupported_features;
-+
-+	return features;
-+}
-+EXPORT_SYMBOL(dpa_fix_features);
-+
- #ifdef CONFIG_FSL_DPAA_TS
- u64 dpa_get_timestamp_ns(const struct dpa_priv_s *priv, enum port_type rx_tx,
- 			const void *data)
-@@ -588,6 +609,16 @@ void dpa_set_rx_mode(struct net_device *net_dev)
+@@ -588,6 +591,16 @@ void dpa_set_rx_mode(struct net_device *net_dev)
  					   "mac_dev->set_promisc() = %d\n",
  					   _errno);
  	}
@@ -403,7 +330,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  
  	_errno = priv->mac_dev->set_multi(net_dev, priv->mac_dev);
  	if (unlikely(_errno < 0) && netif_msg_drv(priv))
-@@ -608,6 +639,7 @@ void dpa_set_buffers_layout(struct mac_device *mac_dev,
+@@ -608,6 +621,7 @@ void dpa_set_buffers_layout(struct mac_device *mac_dev,
  	layout[RX].time_stamp = true;
  #endif
  	fm_port_get_buff_layout_ext_params(mac_dev->port_dev[RX], &params);
@@ -411,7 +338,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  	layout[RX].manip_extra_space = params.manip_extra_space;
  	/* a value of zero for data alignment means "don't care", so align to
  	 * a non-zero value to prevent FMD from using its own default
-@@ -718,7 +750,7 @@ void dpa_bp_drain(struct dpa_bp *bp)
+@@ -718,7 +732,7 @@ void dpa_bp_drain(struct dpa_bp *bp)
  }
  EXPORT_SYMBOL(dpa_bp_drain);
  
@@ -420,7 +347,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  _dpa_bp_free(struct dpa_bp *dpa_bp)
  {
  	struct dpa_bp *bp = dpa_bpid2pool(dpa_bp->bpid);
-@@ -739,6 +771,7 @@ _dpa_bp_free(struct dpa_bp *dpa_bp)
+@@ -739,6 +753,7 @@ _dpa_bp_free(struct dpa_bp *dpa_bp)
  	dpa_bp_array[bp->bpid] = NULL;
  	bman_free_pool(bp->pool);
  }
@@ -428,7 +355,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  
  void __cold __attribute__((nonnull))
  dpa_bp_free(struct dpa_priv_s *priv)
-@@ -1543,8 +1576,9 @@ void dpa_release_sgt(struct qm_sg_entry *sgt)
+@@ -1543,8 +1558,9 @@ void dpa_release_sgt(struct qm_sg_entry *sgt)
  }
  EXPORT_SYMBOL(dpa_release_sgt);
  
@@ -440,7 +367,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  {
  	struct qm_sg_entry	*sgt;
  	struct dpa_bp		*dpa_bp;
-@@ -1600,6 +1634,66 @@ dpa_fd_release(const struct net_device *net_dev, const struct qm_fd *fd)
+@@ -1600,6 +1616,66 @@ dpa_fd_release(const struct net_device *net_dev, const struct qm_fd *fd)
  }
  EXPORT_SYMBOL(dpa_fd_release);
  
@@ -507,7 +434,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  void count_ern(struct dpa_percpu_priv_s *percpu_priv,
  		      const struct qm_mr_entry *msg)
  {
-@@ -1735,7 +1829,7 @@ int dpa_enable_tx_csum(struct dpa_priv_s *priv,
+@@ -1735,7 +1811,7 @@ int dpa_enable_tx_csum(struct dpa_priv_s *priv,
  }
  EXPORT_SYMBOL(dpa_enable_tx_csum);
  
@@ -516,7 +443,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
  void dpa_enable_ceetm(struct net_device *dev)
  {
  	struct dpa_priv_s *priv = netdev_priv(dev);
-@@ -1750,3 +1844,36 @@ void dpa_disable_ceetm(struct net_device *dev)
+@@ -1750,3 +1826,36 @@ void dpa_disable_ceetm(struct net_device *dev)
  }
  EXPORT_SYMBOL(dpa_disable_ceetm);
  #endif
@@ -554,7 +481,7 @@ index 515dfb68ed5f..b7a9536070cf 100644
 +}
 +EXPORT_SYMBOL(dpa_update_eth_if);
 diff --git a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.h b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.h
-index f46c243ff1b8..988f15dc4f5b 100644
+index f46c243ff1b8..bbed46004576 100644
 --- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.h
 +++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.h
 @@ -97,6 +97,21 @@ typedef enum dpaa_eth_hook_result (*dpaa_eth_egress_hook_t)(
@@ -592,16 +519,7 @@ index f46c243ff1b8..988f15dc4f5b 100644
  int dpa_netdev_init(struct net_device *net_dev,
  		    const uint8_t *mac_addr,
  		    uint16_t tx_timeout);
-@@ -147,6 +168,8 @@ dpa_get_stats64(struct net_device *net_dev,
- 		struct rtnl_link_stats64 *stats);
- int dpa_ndo_init(struct net_device *net_dev);
- int dpa_set_features(struct net_device *dev, netdev_features_t features);
-+netdev_features_t dpa_fix_features(struct net_device *dev,
-+				   netdev_features_t features);
- #ifdef CONFIG_FSL_DPAA_TS
- u64 dpa_get_timestamp_ns(const struct dpa_priv_s *priv,
- 			enum port_type rx_tx, const void *data);
-@@ -170,6 +193,8 @@ struct dpa_bp *dpa_bpid2pool(int bpid);
+@@ -170,6 +191,8 @@ struct dpa_bp *dpa_bpid2pool(int bpid);
  void dpa_bpid2pool_map(int bpid, struct dpa_bp *dpa_bp);
  bool dpa_bpid2pool_use(int bpid);
  void dpa_bp_drain(struct dpa_bp *bp);
@@ -610,7 +528,7 @@ index f46c243ff1b8..988f15dc4f5b 100644
  #ifdef CONFIG_FMAN_PFC
  u16 dpa_select_queue(struct net_device *net_dev, struct sk_buff *skb,
  		     struct net_device *sb_dev,
-@@ -201,13 +226,13 @@ void dpaa_eth_init_ports(struct mac_device *mac_dev,
+@@ -201,13 +224,13 @@ void dpaa_eth_init_ports(struct mac_device *mac_dev,
  		struct device *dev);
  void dpa_release_sgt(struct qm_sg_entry *sgt);
  void dpa_release_sgt_by_bpid(struct qm_sg_entry *sgt);
@@ -626,7 +544,7 @@ index f46c243ff1b8..988f15dc4f5b 100644
  void dpa_enable_ceetm(struct net_device *dev);
  void dpa_disable_ceetm(struct net_device *dev);
  #endif
-@@ -222,5 +247,14 @@ int dpa_proxy_set_mac_address(struct proxy_device *proxy_dev,
+@@ -222,5 +245,14 @@ int dpa_proxy_set_mac_address(struct proxy_device *proxy_dev,
  			  struct net_device *net_dev);
  int dpa_proxy_set_rx_mode(struct proxy_device *proxy_dev,
  		      struct net_device *net_dev);
@@ -642,7 +560,7 @@ index f46c243ff1b8..988f15dc4f5b 100644
  
  #endif /* __DPAA_ETH_COMMON_H */
 diff --git a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
-index 4164644d3268..b4c8757ea569 100644
+index 4164644d3268..8c1991aafc2d 100644
 --- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
 +++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
 @@ -52,6 +52,55 @@
@@ -701,7 +619,7 @@ index 4164644d3268..b4c8757ea569 100644
  #endif
  
  /* DMA map and add a page frag back into the bpool.
-@@ -81,6 +130,110 @@ static void dpa_bp_recycle_frag(struct dpa_bp *dpa_bp, unsigned long vaddr,
+@@ -81,6 +130,109 @@ static void dpa_bp_recycle_frag(struct dpa_bp *dpa_bp, unsigned long vaddr,
  	(*count_ptr)++;
  }
  
@@ -753,9 +671,8 @@ index 4164644d3268..b4c8757ea569 100644
 +				 *
 +				 * We only need enough space to store a pointer, but allocate
 +				 * an entire cacheline for performance reasons.
-+				 * Use slab_build_skb for kmalloc'd buffers (kernel 6.12+).
 +				 */
-+				skb = slab_build_skb(ptr_buf);
++				skb = build_skb(ptr_buf, 0);
 +				if (unlikely(!skb)) {
 +					pr_err("%s(%d) ii %d , buffs2fill %d build_skb failed \n",
 +							__FUNCTION__,__LINE__, ii, buffs2fill);
@@ -812,7 +729,7 @@ index 4164644d3268..b4c8757ea569 100644
  static int _dpa_bp_add_8_bufs(const struct dpa_bp *dpa_bp)
  {
  	void *new_buf, *fman_buf;
-@@ -182,12 +335,13 @@ static int _dpa_bp_add_8_bufs(const struct dpa_bp *dpa_bp)
+@@ -182,12 +334,13 @@ static int _dpa_bp_add_8_bufs(const struct dpa_bp *dpa_bp)
  /* Add buffers/(pages) for Rx processing whenever bpool count falls below
   * REFILL_THRESHOLD.
   */
@@ -828,7 +745,7 @@ index 4164644d3268..b4c8757ea569 100644
  		do {
  			new_bufs = _dpa_bp_add_8_bufs(dpa_bp);
  			if (unlikely(!new_bufs)) {
-@@ -198,10 +352,10 @@ int dpaa_eth_refill_bpools(struct dpa_bp *dpa_bp, int *countptr)
+@@ -198,10 +351,10 @@ int dpaa_eth_refill_bpools(struct dpa_bp *dpa_bp, int *countptr)
  				break;
  			}
  			count += new_bufs;
@@ -841,7 +758,7 @@ index 4164644d3268..b4c8757ea569 100644
  			return -ENOMEM;
  	}
  
-@@ -365,7 +519,7 @@ EXPORT_SYMBOL(dpa_buf_is_recyclable);
+@@ -365,7 +518,7 @@ EXPORT_SYMBOL(dpa_buf_is_recyclable);
   * We are guaranteed there is enough room at the end of the data buffer to
   * accommodate the shared info area of the skb.
   */
@@ -850,7 +767,7 @@ index 4164644d3268..b4c8757ea569 100644
  					      const struct qm_fd *fd,
  					      bool *use_gro, bool dcl4c_valid)
  {
-@@ -417,14 +571,14 @@ static struct sk_buff *__hot contig_fd_to_skb(const struct dpa_priv_s *priv,
+@@ -417,14 +570,14 @@ static struct sk_buff *__hot contig_fd_to_skb(const struct dpa_priv_s *priv,
  
  	return skb;
  }
@@ -867,7 +784,7 @@ index 4164644d3268..b4c8757ea569 100644
  					  const struct qm_fd *fd, bool *use_gro,
  					  int *count_ptr, bool dcl4c_valid)
  {
-@@ -444,7 +598,8 @@ static struct sk_buff *__hot sg_fd_to_skb(const struct dpa_priv_s *priv,
+@@ -444,7 +597,8 @@ static struct sk_buff *__hot sg_fd_to_skb(const struct dpa_priv_s *priv,
  	vaddr = phys_to_virt(addr);
  	DPA_BUG_ON(!IS_ALIGNED((unsigned long)vaddr, SMP_CACHE_BYTES));
  
@@ -877,7 +794,7 @@ index 4164644d3268..b4c8757ea569 100644
  	/* Iterate through the SGT entries and add data buffers to the skb */
  	sgt = vaddr + fd_off;
  	for (i = 0; i < DPA_SGT_MAX_ENTRIES; i++) {
-@@ -452,9 +607,9 @@ static struct sk_buff *__hot sg_fd_to_skb(const struct dpa_priv_s *priv,
+@@ -452,9 +606,9 @@ static struct sk_buff *__hot sg_fd_to_skb(const struct dpa_priv_s *priv,
  		DPA_BUG_ON(qm_sg_entry_get_ext(&sgt[i]));
  
  		/* We use a single global Rx pool */
@@ -889,7 +806,7 @@ index 4164644d3268..b4c8757ea569 100644
  		sg_addr = qm_sg_addr(&sgt[i]);
  		sg_vaddr = phys_to_virt(sg_addr);
  		DPA_BUG_ON(!IS_ALIGNED((unsigned long)sg_vaddr,
-@@ -537,6 +692,7 @@ static struct sk_buff *__hot sg_fd_to_skb(const struct dpa_priv_s *priv,
+@@ -537,6 +691,7 @@ static struct sk_buff *__hot sg_fd_to_skb(const struct dpa_priv_s *priv,
  	dpa_bp_recycle_frag(dpa_bp, (unsigned long)vaddr, count_ptr);
  	return skb;
  }
@@ -897,7 +814,7 @@ index 4164644d3268..b4c8757ea569 100644
  
  #ifdef CONFIG_FSL_DPAA_DBG_LOOP
  static inline int dpa_skb_loop(const struct dpa_priv_s *priv,
-@@ -554,6 +710,14 @@ static inline int dpa_skb_loop(const struct dpa_priv_s *priv,
+@@ -554,6 +709,14 @@ static inline int dpa_skb_loop(const struct dpa_priv_s *priv,
  }
  #endif
  
@@ -912,7 +829,7 @@ index 4164644d3268..b4c8757ea569 100644
  void __hot _dpa_rx(struct net_device *net_dev,
  		struct qman_portal *portal,
  		const struct dpa_priv_s *priv,
-@@ -573,7 +737,7 @@ void __hot _dpa_rx(struct net_device *net_dev,
+@@ -573,7 +736,7 @@ void __hot _dpa_rx(struct net_device *net_dev,
  
  	if (unlikely(fd_status & FM_FD_STAT_RX_ERRORS) != 0) {
  		if (netif_msg_hw(priv) && net_ratelimit())
@@ -921,7 +838,7 @@ index 4164644d3268..b4c8757ea569 100644
  					fd_status & FM_FD_STAT_RX_ERRORS);
  
  		percpu_stats->rx_errors++;
-@@ -589,6 +753,31 @@ void __hot _dpa_rx(struct net_device *net_dev,
+@@ -589,6 +752,31 @@ void __hot _dpa_rx(struct net_device *net_dev,
  
  	/* The only FD types that we may receive are contig and S/G */
  	DPA_BUG_ON((fd->format != qm_fd_contig) && (fd->format != qm_fd_sg));
@@ -953,7 +870,7 @@ index 4164644d3268..b4c8757ea569 100644
  
  	if (likely(fd->format == qm_fd_contig)) {
  #ifdef CONFIG_FSL_DPAA_HOOKS
-@@ -599,6 +788,15 @@ void __hot _dpa_rx(struct net_device *net_dev,
+@@ -599,6 +787,15 @@ void __hot _dpa_rx(struct net_device *net_dev,
  			/* won't count the rx bytes in */
  			return;
  		}
@@ -969,7 +886,7 @@ index 4164644d3268..b4c8757ea569 100644
  #endif
  		skb = contig_fd_to_skb(priv, fd, &use_gro, dcl4c_valid);
  	} else {
-@@ -645,6 +843,7 @@ void __hot _dpa_rx(struct net_device *net_dev,
+@@ -645,6 +842,7 @@ void __hot _dpa_rx(struct net_device *net_dev,
  _release_frame:
  	dpa_fd_release(net_dev, fd);
  }
@@ -977,7 +894,7 @@ index 4164644d3268..b4c8757ea569 100644
  
  int __hot skb_to_contig_fd(struct dpa_priv_s *priv,
  			   struct sk_buff *skb, struct qm_fd *fd,
-@@ -746,7 +945,7 @@ EXPORT_SYMBOL(skb_to_contig_fd);
+@@ -746,7 +944,7 @@ EXPORT_SYMBOL(skb_to_contig_fd);
   * - SG fragments that aren't mod 16 bytes in size (except for the last
   *   fragment)
   */
@@ -986,7 +903,7 @@ index 4164644d3268..b4c8757ea569 100644
  {
  	skb_frag_t *frag;
  	int i, nr_frags;
-@@ -808,12 +1007,13 @@ static bool a050385_check_skb(struct sk_buff *skb, struct dpa_priv_s *priv)
+@@ -808,12 +1006,13 @@ static bool a050385_check_skb(struct sk_buff *skb, struct dpa_priv_s *priv)
  
  	return false;
  }
@@ -1001,7 +918,7 @@ index 4164644d3268..b4c8757ea569 100644
  					   struct dpa_priv_s *priv)
  {
  	int trans_offset = skb_transport_offset(skb);
-@@ -882,8 +1082,213 @@ static struct sk_buff *a050385_realign_skb(struct sk_buff *skb,
+@@ -882,8 +1081,213 @@ static struct sk_buff *a050385_realign_skb(struct sk_buff *skb,
  	put_page(npage);
  	return NULL;
  }
@@ -1215,7 +1132,7 @@ index 4164644d3268..b4c8757ea569 100644
  int __hot skb_to_sg_fd(struct dpa_priv_s *priv,
  		       struct sk_buff *skb, struct qm_fd *fd)
  {
-@@ -1030,9 +1435,475 @@ int __hot skb_to_sg_fd(struct dpa_priv_s *priv,
+@@ -1030,9 +1434,476 @@ int __hot skb_to_sg_fd(struct dpa_priv_s *priv,
  }
  EXPORT_SYMBOL(skb_to_sg_fd);
  
@@ -1590,6 +1507,7 @@ index 4164644d3268..b4c8757ea569 100644
 +	}
 +	return 0;
 +}
++EXPORT_SYMBOL(dpaa_submit_inb_pkt_to_SEC);
 +#endif
 +#endif
 +
@@ -2285,7 +2203,7 @@ index 6eedcf9de5fb..bcb4567cd5bb 100644
 +##	setenv FMAN_DEBUG '-DFM_CC_MURAM_DEBUG=1'
 +ccflags-y += $(FMAN_DEBUG)
 diff --git a/drivers/net/ethernet/freescale/sdk_fman/Peripherals/FM/Pcd/fm_cc.c b/drivers/net/ethernet/freescale/sdk_fman/Peripherals/FM/Pcd/fm_cc.c
-index b8d600fa6f25..1f73b66efa16 100644
+index b8d600fa6f25..9df4a692cdc1 100644
 --- a/drivers/net/ethernet/freescale/sdk_fman/Peripherals/FM/Pcd/fm_cc.c
 +++ b/drivers/net/ethernet/freescale/sdk_fman/Peripherals/FM/Pcd/fm_cc.c
 @@ -51,6 +51,113 @@
@@ -3123,7 +3041,7 @@ index b8d600fa6f25..1f73b66efa16 100644
      p_FmPcdCcTree->p_Lock = FmPcdAcquireLock(p_FmPcd);
      if (!p_FmPcdCcTree->p_Lock)
      {
-@@ -7030,13 +7566,17 @@ t_Error FM_PCD_MatchTableGetIndexedHashBucket(t_Handle h_CcNode,
+@@ -7030,19 +7566,30 @@ t_Error FM_PCD_MatchTableGetIndexedHashBucket(t_Handle h_CcNode,
  
  t_Handle FM_PCD_HashTableSet(t_Handle h_FmPcd, t_FmPcdHashTableParams *p_Param)
  {
@@ -3147,20 +3065,20 @@ index b8d600fa6f25..1f73b66efa16 100644
      bool statsEnForMiss = FALSE;
      t_Error err;
  
-@@ -7055,6 +7595,12 @@ t_Handle FM_PCD_HashTableSet(t_Handle h_FmPcd, t_FmPcdHashTableParams *p_Param)
-         return NULL;
-     }
+     SANITY_CHECK_RETURN_VALUE(h_FmPcd, E_INVALID_HANDLE, NULL);
+     SANITY_CHECK_RETURN_VALUE(p_Param, E_NULL_POINTER, NULL);
  
 +#ifdef USE_ENHANCED_EHASH
-+    /* When USE_ENHANCED_EHASH is defined, always use external hash tables
-+     * which use DDR instead of MURAM and don't have the nibble-0 mask restriction */
++    /* When enhanced external hash is enabled, route all hash tables
++     * to ExternalHashTableSet which doesn't have the icIndxMask
++     * nibble restriction */
 +    return ExternalHashTableSet(h_FmPcd, p_Param);
 +#endif
 +
-     /*Fix: QorIQ SDK / QSDK-2131*/
-     if (p_Param->ccNextEngineParamsForMiss.nextEngine == e_FM_PCD_INVALID)
+     if (p_Param->maxNumOfKeys == 0)
      {
-@@ -7283,38 +7829,33 @@ t_Error FM_PCD_HashTableAddKey(t_Handle h_HashTbl, uint8_t keySize,
+         REPORT_ERROR(MINOR, E_INVALID_VALUE, ("Max number of keys must be higher then 0"));
+@@ -7283,38 +7830,33 @@ t_Error FM_PCD_HashTableAddKey(t_Handle h_HashTbl, uint8_t keySize,
          RETURN_ERROR(MAJOR, E_INVALID_VALUE,
                       ("Keys masks not supported for hash table"));
  
@@ -3216,7 +3134,7 @@ index b8d600fa6f25..1f73b66efa16 100644
  }
  
  t_Error FM_PCD_HashTableModifyNextEngine(
-@@ -7322,86 +7863,41 @@ t_Error FM_PCD_HashTableModifyNextEngine(
+@@ -7322,86 +7864,41 @@ t_Error FM_PCD_HashTableModifyNextEngine(
          t_FmPcdCcNextEngineParams *p_FmPcdCcNextEngineParams)
  {
      t_FmPcdCcNode *p_HashTbl = (t_FmPcdCcNode *)h_HashTbl;
@@ -3320,7 +3238,7 @@ index b8d600fa6f25..1f73b66efa16 100644
  t_Error FM_PCD_HashTableGetMissNextEngine(
          t_Handle h_HashTbl,
          t_FmPcdCcNextEngineParams *p_FmPcdCcNextEngineParams)
-@@ -7411,6 +7907,11 @@ t_Error FM_PCD_HashTableGetMissNextEngine(
+@@ -7411,6 +7908,11 @@ t_Error FM_PCD_HashTableGetMissNextEngine(
  
      SANITY_CHECK_RETURN_ERROR(p_HashTbl, E_INVALID_HANDLE);
  
@@ -3332,7 +3250,7 @@ index b8d600fa6f25..1f73b66efa16 100644
      /* Miss next engine of each bucket was initialized with the next engine of the hash table */
      p_HashBucket =
              p_HashTbl->keyAndNextEngineParams[0].nextEngineParams.params.ccParams.h_CcNode;
-@@ -7422,6 +7923,56 @@ t_Error FM_PCD_HashTableGetMissNextEngine(
+@@ -7422,6 +7924,56 @@ t_Error FM_PCD_HashTableGetMissNextEngine(
      return E_OK;
  }
  
@@ -3389,7 +3307,7 @@ index b8d600fa6f25..1f73b66efa16 100644
  t_Error FM_PCD_HashTableFindNGetKeyStatistics(
          t_Handle h_HashTbl, uint8_t keySize, uint8_t *p_Key,
          t_FmPcdCcKeyStatistics *p_KeyStatistics)
-@@ -7436,8 +7987,13 @@ t_Error FM_PCD_HashTableFindNGetKeyStatistics(
+@@ -7436,8 +7988,13 @@ t_Error FM_PCD_HashTableFindNGetKeyStatistics(
      SANITY_CHECK_RETURN_ERROR(p_Key, E_NULL_POINTER);
      SANITY_CHECK_RETURN_ERROR(p_KeyStatistics, E_NULL_POINTER);
  
@@ -3404,7 +3322,7 @@ index b8d600fa6f25..1f73b66efa16 100644
                                                  &h_HashBucket, &bucketIndex,
                                                  &lastIndex);
      if (err)
-@@ -7456,6 +8012,11 @@ t_Error FM_PCD_HashTableGetMissStatistics(
+@@ -7456,6 +8013,11 @@ t_Error FM_PCD_HashTableGetMissStatistics(
      SANITY_CHECK_RETURN_ERROR(p_HashTbl, E_INVALID_HANDLE);
      SANITY_CHECK_RETURN_ERROR(p_MissStatistics, E_NULL_POINTER);
  
@@ -3416,7 +3334,7 @@ index b8d600fa6f25..1f73b66efa16 100644
      if (!p_HashTbl->statsEnForMiss)
          RETURN_ERROR(MAJOR, E_INVALID_STATE,
                       ("Statistics were not enabled for miss"));
-@@ -7465,3 +8026,200 @@ t_Error FM_PCD_HashTableGetMissStatistics(
+@@ -7465,3 +8027,200 @@ t_Error FM_PCD_HashTableGetMissStatistics(
  
      return FM_PCD_MatchTableGetMissStatistics(h_HashBucket, p_MissStatistics);
  }
@@ -10883,6 +10801,60 @@ index 080a23e963b9..f8936fd2f2e0 100644
  	uint32_t fmbm_opc;		/**< O/H Performance Counters  */
  	uint32_t fmbm_opcp;		/**< O/H Performance Count Parameters */
  	uint32_t fmbm_occn;		/**< O/H Cycle Counter  */
+diff --git a/drivers/net/ethernet/freescale/sdk_fman/inc/stdlib_ext.h b/drivers/net/ethernet/freescale/sdk_fman/inc/stdlib_ext.h
+index 48615b7d0dff..fdfd432f9b3b 100644
+--- a/drivers/net/ethernet/freescale/sdk_fman/inc/stdlib_ext.h
++++ b/drivers/net/ethernet/freescale/sdk_fman/inc/stdlib_ext.h
+@@ -41,46 +41,10 @@
+  */
+ int atoi(const char *s);
+ 
+-/**
+- * strnlen - Find the length of a length-limited string
+- * @s: The string to be sized
+- * @count: The maximum number of bytes to search
+- */
+-size_t strnlen(const char * s, size_t count);
+-
+-/**
+- * strlen - Find the length of a string
+- * @s: The string to be sized
+- */
+-size_t strlen(const char * s);
+-
+-/**
+- * strtok - Split a string into tokens
+- * @s: The string to be searched
+- * @ct: The characters to search for
+- *
+- * WARNING: strtok is deprecated, use strsep instead.
+- */
+-char * strtok(char * s,const char * ct);
+-
+-/**
+- * strncpy - Copy a length-limited, %NUL-terminated string
+- * @dest: Where to copy the string to
+- * @src: Where to copy the string from
+- * @count: The maximum number of bytes to copy
+- *
+- * Note that unlike userspace strncpy, this does not %NUL-pad the buffer.
+- * However, the result is not %NUL-terminated if the source exceeds
+- * @count bytes.
+- */
+-char * strncpy(char * dest,const char *src,size_t count);
+-
+-/**
+- * strcpy - Copy a %NUL terminated string
+- * @dest: Where to copy the string to
+- * @src: Where to copy the string from
++/* String functions (strlen, strnlen, strcpy, strncpy, strtok) are provided
++ * by the kernel - do not redeclare them here to avoid conflicts with
++ * fortify-string.h macros.
+  */
+-char * strcpy(char * dest,const char *src);
+ 
+ /**
+  * vsscanf - Unformat a buffer into a list of arguments
 diff --git a/drivers/net/ethernet/freescale/sdk_fman/ls1043_dflags.h b/drivers/net/ethernet/freescale/sdk_fman/ls1043_dflags.h
 index 67d96367f075..1d85e6da7ea5 100644
 --- a/drivers/net/ethernet/freescale/sdk_fman/ls1043_dflags.h
@@ -11044,72 +11016,10 @@ index ea4235847686..1aa05d79cfdf 100644
  
      if (CheckNConfigFmPortAdvArgs(p_LnxWrpFmPortDev) != E_OK)
 diff --git a/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_ioctls_fm.c b/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_ioctls_fm.c
-index f97c37f06255..fea3b83bff0f 100644
+index f97c37f06255..80c324d8110e 100644
 --- a/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_ioctls_fm.c
 +++ b/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_ioctls_fm.c
-@@ -350,8 +350,8 @@ void LnxWrpPCDIOCTLTypeChecking(void)
-     ASSERT_COND(sizeof(ioc_fm_pcd_kg_plcr_profile_t) == sizeof(t_FmPcdKgPlcrProfile));
-     ASSERT_COND(sizeof(ioc_fm_pcd_kg_storage_profile_t) == sizeof(t_FmPcdKgStorageProfile));
-     ASSERT_COND(sizeof(ioc_fm_pcd_kg_cc_t) == sizeof(t_FmPcdKgCc));
--#if !defined(CONFIG_COMPAT)
--    /* different alignment */
-+#if !defined(CONFIG_COMPAT) && !defined(CONFIG_ARM64)
-+    /* different alignment - skip on ARM64 due to pointer size differences */
-     ASSERT_COND(sizeof(ioc_fm_pcd_kg_scheme_params_t) == sizeof(t_FmPcdKgSchemeParams) + sizeof(void *));
- #endif
-     ASSERT_COND(sizeof(ioc_fm_pcd_cc_next_cc_params_t) == sizeof(t_FmPcdCcNextCcParams));
-@@ -361,21 +361,24 @@ void LnxWrpPCDIOCTLTypeChecking(void)
-     ASSERT_COND(sizeof(ioc_fm_pcd_cc_next_engine_params_t) == sizeof(t_FmPcdCcNextEngineParams));
-     ASSERT_COND(sizeof(ioc_fm_pcd_cc_key_params_t) == sizeof(t_FmPcdCcKeyParams));
-     ASSERT_COND(sizeof(ioc_keys_params_t) == sizeof(t_KeysParams));
--#if !defined(CONFIG_COMPAT)
--    /* different alignment */
-+#if !defined(CONFIG_COMPAT) && !defined(CONFIG_ARM64)
-+    /* different alignment - skip on ARM64 due to pointer size differences */
-     ASSERT_COND(sizeof(ioc_fm_pcd_cc_node_params_t) == sizeof(t_FmPcdCcNodeParams) + sizeof(void *));
-     ASSERT_COND(sizeof(ioc_fm_pcd_hash_table_params_t) == sizeof(t_FmPcdHashTableParams) + sizeof(void *));
- #endif
-     ASSERT_COND(sizeof(ioc_fm_pcd_cc_grp_params_t) == sizeof(t_FmPcdCcGrpParams));
--#if !defined(CONFIG_COMPAT)
--    /* different alignment */
-+#if !defined(CONFIG_COMPAT) && !defined(CONFIG_ARM64)
-+    /* different alignment - skip on ARM64 due to pointer size differences */
-     ASSERT_COND(sizeof(ioc_fm_pcd_cc_tree_params_t) == sizeof(t_FmPcdCcTreeParams) + sizeof(void *));
- #endif
-     ASSERT_COND(sizeof(ioc_fm_pcd_plcr_byte_rate_mode_param_t) == sizeof(t_FmPcdPlcrByteRateModeParams));
-     ASSERT_COND(sizeof(ioc_fm_pcd_plcr_non_passthrough_alg_param_t) == sizeof(t_FmPcdPlcrNonPassthroughAlgParams));
-     ASSERT_COND(sizeof(ioc_fm_pcd_plcr_next_engine_params_u) == sizeof(u_FmPcdPlcrNextEngineParams));
-     /*ioc_fm_pcd_port_params_t : private */
-+#if !defined(CONFIG_COMPAT) && !defined(CONFIG_ARM64)
-+    /* different alignment - skip on ARM64 due to pointer size differences */
-     ASSERT_COND(sizeof(ioc_fm_pcd_plcr_profile_params_t) == sizeof(t_FmPcdPlcrProfileParams) + sizeof(void *));
-+#endif
-     /*ioc_fm_pcd_cc_tree_modify_next_engine_params_t : private */
- 
-     /*ioc_fm_pcd_cc_node_modify_next_engine_params_t : private */
-@@ -396,8 +399,8 @@ void LnxWrpPCDIOCTLTypeChecking(void)
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_hdr_params_t) == sizeof(t_FmPcdManipHdrParams));
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_frag_params_t) == sizeof(t_FmPcdManipFragParams));
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_reassem_params_t) == sizeof(t_FmPcdManipReassemParams));
--#if !defined(CONFIG_COMPAT)
--    /* different alignment */
-+#if !defined(CONFIG_COMPAT) && !defined(CONFIG_ARM64)
-+    /* different alignment - skip on ARM64 due to pointer size differences */
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_params_t) == sizeof(t_FmPcdManipParams) + sizeof(void *));
- #endif
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_reassem_ip_stats_t) == sizeof(t_FmPcdManipReassemIpStats));
-@@ -405,7 +408,10 @@ void LnxWrpPCDIOCTLTypeChecking(void)
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_reassem_stats_t) == sizeof(t_FmPcdManipReassemStats));
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_frag_stats_t) == sizeof(t_FmPcdManipFragStats));
-     ASSERT_COND(sizeof(ioc_fm_pcd_manip_stats_t) == sizeof(t_FmPcdManipStats));
-+#if !defined(CONFIG_COMPAT) && !defined(CONFIG_ARM64)
-+    /* different alignment - skip on ARM64 due to pointer size differences */
-     ASSERT_COND(sizeof(ioc_fm_pcd_frm_replic_group_params_t) == sizeof(t_FmPcdFrmReplicGroupParams) + sizeof(void *));
-+#endif
- 
-     /* fm_port_ext.h == fm_port_ioctls.h */
-     ASSERT_COND(sizeof(ioc_fm_port_rate_limit_t) == sizeof(t_FmPortRateLimit));
-@@ -2173,6 +2179,11 @@ Status: not exported
+@@ -2173,6 +2173,11 @@ Status: not exported
  #endif
          case FM_PCD_IOC_HASH_TABLE_GET_MISS_STAT:
          {
@@ -11121,7 +11031,7 @@ index f97c37f06255..fea3b83bff0f 100644
              ioc_fm_pcd_cc_tbl_get_stats_t param;
  
  #if defined(CONFIG_COMPAT)
-@@ -2237,7 +2248,7 @@ Status: not exported
+@@ -2237,7 +2242,7 @@ Status: not exported
                                    sizeof(ioc_fm_pcd_cc_tbl_get_stats_t)))
                      RETURN_ERROR(MINOR, E_READ_FAILED, NO_MSG);
              }
@@ -11130,7 +11040,7 @@ index f97c37f06255..fea3b83bff0f 100644
              break;
          }
  
-@@ -2347,6 +2358,11 @@ Status: not exported
+@@ -2347,6 +2352,11 @@ Status: not exported
  #endif
          case FM_PCD_IOC_HASH_TABLE_DELETE:
          {
@@ -11142,7 +11052,7 @@ index f97c37f06255..fea3b83bff0f 100644
              ioc_fm_obj_t id;
  
              memset(&id, 0, sizeof(ioc_fm_obj_t));
-@@ -2369,6 +2385,7 @@ Status: not exported
+@@ -2369,6 +2379,7 @@ Status: not exported
              }
  
              err = FM_PCD_HashTableDelete(id.obj);
@@ -11150,7 +11060,7 @@ index f97c37f06255..fea3b83bff0f 100644
              break;
          }
  
-@@ -2498,6 +2515,11 @@ Status: not exported
+@@ -2498,6 +2509,11 @@ Status: not exported
  #endif
          case FM_PCD_IOC_HASH_TABLE_REMOVE_KEY:
          {
@@ -11162,7 +11072,7 @@ index f97c37f06255..fea3b83bff0f 100644
              ioc_fm_pcd_hash_table_remove_key_params_t *param = NULL;
  
              param = (ioc_fm_pcd_hash_table_remove_key_params_t*) XX_Malloc(
-@@ -2574,6 +2596,7 @@ Status: not exported
+@@ -2574,6 +2590,7 @@ Status: not exported
              if (param->p_key)
                  XX_Free(param->p_key);
              XX_Free(param);
@@ -11170,17 +11080,17 @@ index f97c37f06255..fea3b83bff0f 100644
              break;
          }
  
-@@ -3379,6 +3402,9 @@ Status: not exported
+@@ -3379,6 +3396,9 @@ Status: not exported
      }
  
          default:
-+            /* Silently reject TTY ioctls (e.g., TCGETS from isatty()) */
++            /* Silently ignore TTY ioctls - they're not meant for us */
 +            if (_IOC_TYPE(cmd) == 'T')
-+                return E_NOT_SUPPORTED;
++                return E_OK;
              RETURN_ERROR(MINOR, E_INVALID_SELECTION,
                  ("invalid ioctl: cmd:0x%08x(type:0x%02x, nr: %d.\n",
                  cmd, _IOC_TYPE(cmd), _IOC_NR(cmd)));
-@@ -3651,6 +3677,30 @@ t_Error LnxwrpFmIOCTL(t_LnxWrpFmDev *p_LnxWrpFmDev, unsigned int cmd, unsigned l
+@@ -3651,6 +3671,30 @@ t_Error LnxwrpFmIOCTL(t_LnxWrpFmDev *p_LnxWrpFmDev, unsigned int cmd, unsigned l
          }
          break;
  
@@ -11211,16 +11121,6 @@ index f97c37f06255..fea3b83bff0f 100644
          default:
              return LnxwrpFmPcdIOCTL(p_LnxWrpFmDev, cmd, arg, compat);
      }
-@@ -4612,6 +4662,9 @@ t_Error LnxwrpFmPortIOCTL(t_LnxWrpFmPortDev *p_LnxWrpFmPortDev, unsigned int cmd
-         }
- 
-         default:
-+            /* Silently reject TTY ioctls (e.g., TCGETS from isatty()) */
-+            if (_IOC_TYPE(cmd) == 'T')
-+                return E_NOT_SUPPORTED;
-             RETURN_ERROR(MINOR, E_INVALID_SELECTION,
-                 ("invalid ioctl: cmd:0x%08x(type:0x%02x, nr:0x%02x.\n",
-                 cmd, _IOC_TYPE(cmd), _IOC_NR(cmd)));
 diff --git a/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_ioctls_fm_compat.h b/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_ioctls_fm_compat.h
 index 41df9a906b03..448291e32f68 100644
 --- a/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_ioctls_fm_compat.h
@@ -11534,8 +11434,29 @@ index 8c677e254aff..b4505edeb111 100644
  
  void XX_Free(void *p)
  {
+diff --git a/drivers/net/phy/phylink.c b/drivers/net/phy/phylink.c
+index c95e4fa260d8..d7e6f46a1f38 100644
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -222,7 +222,7 @@ static unsigned int phylink_interface_signal_rate(phy_interface_t interface)
+  *
+  * Return: The maximum speed of @interface
+  */
+-static int phylink_interface_max_speed(phy_interface_t interface)
++int phylink_interface_max_speed(phy_interface_t interface)
+ {
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_100BASEX:
+@@ -283,6 +283,7 @@ static int phylink_interface_max_speed(phy_interface_t interface)
+ 	WARN_ON_ONCE(1);
+ 	return SPEED_UNKNOWN;
+ }
++EXPORT_SYMBOL_GPL(phylink_interface_max_speed);
+ 
+ /**
+  * phylink_caps_to_linkmodes() - Convert capabilities to ethtool link modes
 diff --git a/drivers/net/ppp/ppp_generic.c b/drivers/net/ppp/ppp_generic.c
-index afc1566488b3..cfa01148b610 100644
+index 9b8ddf644ac3..c9b16e6e34fe 100644
 --- a/drivers/net/ppp/ppp_generic.c
 +++ b/drivers/net/ppp/ppp_generic.c
 @@ -54,6 +54,10 @@
@@ -11608,14 +11529,14 @@ index afc1566488b3..cfa01148b610 100644
  
  	ppp_lock(ppp);
  	spin_lock_bh(&pch->downl);
-@@ -3519,6 +3558,14 @@ ppp_connect_channel(struct channel *pch, int unit)
+@@ -3523,6 +3562,14 @@ ppp_connect_channel(struct channel *pch, int unit)
  
   outl:
  	write_unlock_bh(&pch->upl);
 +#if defined(CONFIG_CPE_FAST_PATH)
 +	if ((ppp->dev) && (!ppp->closing)) {
 +		rtnl_lock();
-+		rtmsg_ifinfo(RTM_NEWLINK, ppp->dev, 0, GFP_KERNEL);
++		rtmsg_ifinfo(RTM_NEWLINK, ppp->dev, 0, GFP_KERNEL, 0, NULL);
 +		rtnl_unlock();
 +	}
 +#endif
@@ -11623,7 +11544,7 @@ index afc1566488b3..cfa01148b610 100644
   out:
  	mutex_unlock(&pn->all_ppp_mutex);
  	return ret;
-@@ -3544,6 +3591,16 @@ ppp_disconnect_channel(struct channel *pch)
+@@ -3548,6 +3595,16 @@ ppp_disconnect_channel(struct channel *pch)
  		if (--ppp->n_channels == 0)
  			wake_up_interruptible(&ppp->file.rwait);
  		ppp_unlock(ppp);
@@ -11631,7 +11552,7 @@ index afc1566488b3..cfa01148b610 100644
 +#if defined(CONFIG_CPE_FAST_PATH)
 +		if ((ppp->dev) && (!ppp->closing)) {
 +			int lock_flag = rtnl_trylock();
-+			rtmsg_ifinfo(RTM_NEWLINK, ppp->dev, 0, GFP_KERNEL);
++			rtmsg_ifinfo(RTM_NEWLINK, ppp->dev, 0, GFP_KERNEL, 0, NULL);
 +			if (lock_flag)
 +				rtnl_unlock();
 +		}
@@ -11641,10 +11562,10 @@ index afc1566488b3..cfa01148b610 100644
  		if (refcount_dec_and_test(&ppp->file.refcnt))
  			ppp_destroy_interface(ppp);
 diff --git a/drivers/net/ppp/pppoe.c b/drivers/net/ppp/pppoe.c
-index 2ea4f4890d23..454468f3a8d6 100644
+index 3d145fb7a6ab..629b01a9f7f3 100644
 --- a/drivers/net/ppp/pppoe.c
 +++ b/drivers/net/ppp/pppoe.c
-@@ -948,6 +948,14 @@ static int __pppoe_xmit(struct sock *sk, struct sk_buff *skb)
+@@ -950,6 +950,14 @@ static int __pppoe_xmit(struct sock *sk, struct sk_buff *skb)
  
  	skb->protocol = cpu_to_be16(ETH_P_PPP_SES);
  	skb->dev = dev;
@@ -11659,7 +11580,7 @@ index 2ea4f4890d23..454468f3a8d6 100644
  
  	dev_hard_header(skb, dev, ETH_P_PPP_SES,
  			po->pppoe_pa.remote, NULL, data_len);
-@@ -1030,17 +1038,32 @@ static int pppoe_seq_show(struct seq_file *seq, void *v)
+@@ -1032,17 +1040,32 @@ static int pppoe_seq_show(struct seq_file *seq, void *v)
  {
  	struct pppox_sock *po;
  	char *dev_name;
@@ -11693,7 +11614,7 @@ index 2ea4f4890d23..454468f3a8d6 100644
  	return 0;
  }
 diff --git a/drivers/net/usb/usbnet.c b/drivers/net/usb/usbnet.c
-index ccf45ca2feb5..93bf0481c7ce 100644
+index 0ff7357c3c91..a1adfdfc673c 100644
 --- a/drivers/net/usb/usbnet.c
 +++ b/drivers/net/usb/usbnet.c
 @@ -31,6 +31,15 @@
@@ -12208,10 +12129,10 @@ index c42bde697436..68225db4d865 100644
  }
  #endif
 diff --git a/include/linux/if_bridge.h b/include/linux/if_bridge.h
-index 3ff96ae31bf6..1979d27a426a 100644
+index cff03a1dfd68..255ca799ac52 100644
 --- a/include/linux/if_bridge.h
 +++ b/include/linux/if_bridge.h
-@@ -71,6 +71,23 @@ void brioctl_set(int (*hook)(struct net *net, struct net_bridge *br,
+@@ -72,6 +72,23 @@ void brioctl_set(int (*hook)(struct net *net, struct net_bridge *br,
  int br_ioctl_call(struct net *net, struct net_bridge *br, unsigned int cmd,
  		  struct ifreq *ifr, void __user *uarg);
  
@@ -12236,10 +12157,10 @@ index 3ff96ae31bf6..1979d27a426a 100644
  int br_multicast_list_adjacent(struct net_device *dev,
  			       struct list_head *br_ip_list);
 diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
-index 35b886385f32..197479d86217 100644
+index 1d2dd73b6091..5aa367ccb345 100644
 --- a/include/linux/netdevice.h
 +++ b/include/linux/netdevice.h
-@@ -2071,6 +2071,10 @@ struct net_device {
+@@ -2072,6 +2072,10 @@ struct net_device {
  	__cacheline_group_begin(net_device_read_rx);
  	struct bpf_prog __rcu	*xdp_prog;
  	struct list_head	ptype_specific;
@@ -12250,7 +12171,7 @@ index 35b886385f32..197479d86217 100644
  	int			ifindex;
  	unsigned int		real_num_rx_queues;
  	struct netdev_rx_queue	*_rx;
-@@ -3097,10 +3101,29 @@ u16 dev_pick_tx_zero(struct net_device *dev, struct sk_buff *skb,
+@@ -3107,10 +3111,29 @@ u16 dev_pick_tx_zero(struct net_device *dev, struct sk_buff *skb,
  int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev);
  int __dev_direct_xmit(struct sk_buff *skb, u16 queue_id);
  
@@ -12280,7 +12201,7 @@ index 35b886385f32..197479d86217 100644
  
  static inline int dev_queue_xmit_accel(struct sk_buff *skb,
  				       struct net_device *sb_dev)
-@@ -5277,4 +5300,12 @@ extern struct net_device *blackhole_netdev;
+@@ -5287,4 +5310,12 @@ extern struct net_device *blackhole_netdev;
  		atomic_long_add((VAL), &(DEV)->stats.__##FIELD)
  #define DEV_STATS_READ(DEV, FIELD) atomic_long_read(&(DEV)->stats.__##FIELD)
  
@@ -12293,6 +12214,18 @@ index 35b886385f32..197479d86217 100644
 +#endif
 +
  #endif	/* _LINUX_NETDEVICE_H */
+diff --git a/include/linux/phylink.h b/include/linux/phylink.h
+index 5462cc6a37dc..792b256b9a92 100644
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -648,6 +648,7 @@ int phylink_ethtool_set_eee(struct phylink *link, struct ethtool_keee *eee);
+ int phylink_mii_ioctl(struct phylink *, struct ifreq *, int);
+ int phylink_speed_down(struct phylink *pl, bool sync);
+ int phylink_speed_up(struct phylink *pl);
++int phylink_interface_max_speed(phy_interface_t interface);
+ 
+ #define phylink_zero(bm) \
+ 	bitmap_zero(bm, __ETHTOOL_LINK_MODE_MASK_NBITS)
 diff --git a/include/linux/poll.h b/include/linux/poll.h
 index fc641b50f129..2b1f63e79be8 100644
 --- a/include/linux/poll.h
@@ -12345,10 +12278,10 @@ index 7cf21f8ce51b..b78e5077ff07 100644
  	sk_buff_data_t		tail;
  	sk_buff_data_t		end;
 diff --git a/include/net/ip.h b/include/net/ip.h
-index bd201278c55a..25c7870e2485 100644
+index 5f0f1215d2f9..839fddfa819d 100644
 --- a/include/net/ip.h
 +++ b/include/net/ip.h
-@@ -723,6 +723,9 @@ enum ip_defrag_users {
+@@ -724,6 +724,9 @@ enum ip_defrag_users {
  	IP_DEFRAG_VS_FWD,
  	IP_DEFRAG_AF_PACKET,
  	IP_DEFRAG_MACVLAN,
@@ -12359,10 +12292,10 @@ index bd201278c55a..25c7870e2485 100644
  
  /* Return true if the value of 'user' is between 'lower_bond'
 diff --git a/include/net/ip6_tunnel.h b/include/net/ip6_tunnel.h
-index 399592405c72..9835c0561cd0 100644
+index 79b066a4d13b..127251801d97 100644
 --- a/include/net/ip6_tunnel.h
 +++ b/include/net/ip6_tunnel.h
-@@ -52,7 +52,12 @@ struct ip6_tnl {
+@@ -65,7 +65,12 @@ struct ip6_tnl {
  	struct flowi fl;	/* flowi template for xmit */
  	struct dst_cache dst_cache;	/* cached dst */
  	struct gro_cells gro_cells;
@@ -12535,7 +12468,7 @@ index 0b2e3a5e01d8..ac95e2cdc39a 100644
  			     __be32 daddr, __be16 dport, int dif);
  struct sock *__udp4_lib_lookup(const struct net *net, __be32 saddr,
 diff --git a/include/net/xfrm.h b/include/net/xfrm.h
-index 1484dd15a369..099d3ab51b20 100644
+index 1484dd15a369..392a64a1639a 100644
 --- a/include/net/xfrm.h
 +++ b/include/net/xfrm.h
 @@ -187,6 +187,12 @@ struct xfrm_state {
@@ -12576,7 +12509,49 @@ index 1484dd15a369..099d3ab51b20 100644
  
  /* callback structure passed from either netlink or pfkey */
  struct km_event {
-@@ -1114,6 +1131,47 @@ struct sec_path {
+@@ -424,7 +441,6 @@ int xfrm_input_register_afinfo(const struct xfrm_input_afinfo *afinfo);
+ int xfrm_input_unregister_afinfo(const struct xfrm_input_afinfo *afinfo);
+ 
+ void xfrm_flush_gc(void);
+-void xfrm_state_delete_tunnel(struct xfrm_state *x);
+ 
+ struct xfrm_type {
+ 	struct module		*owner;
+@@ -472,7 +488,8 @@ static inline int xfrm_af2proto(unsigned int family)
+ 
+ static inline const struct xfrm_mode *xfrm_ip2inner_mode(struct xfrm_state *x, int ipproto)
+ {
+-	if ((ipproto == IPPROTO_IPIP && x->props.family == AF_INET) ||
++	if ((x->sel.family != AF_UNSPEC) ||
++	    (ipproto == IPPROTO_IPIP && x->props.family == AF_INET) ||
+ 	    (ipproto == IPPROTO_IPV6 && x->props.family == AF_INET6))
+ 		return &x->inner_mode;
+ 	else
+@@ -851,7 +868,7 @@ static inline void xfrm_pols_put(struct xfrm_policy **pols, int npols)
+ 		xfrm_pol_put(pols[i]);
+ }
+ 
+-void __xfrm_state_destroy(struct xfrm_state *, bool);
++void __xfrm_state_destroy(struct xfrm_state *);
+ 
+ static inline void __xfrm_state_put(struct xfrm_state *x)
+ {
+@@ -861,13 +878,7 @@ static inline void __xfrm_state_put(struct xfrm_state *x)
+ static inline void xfrm_state_put(struct xfrm_state *x)
+ {
+ 	if (refcount_dec_and_test(&x->refcnt))
+-		__xfrm_state_destroy(x, false);
+-}
+-
+-static inline void xfrm_state_put_sync(struct xfrm_state *x)
+-{
+-	if (refcount_dec_and_test(&x->refcnt))
+-		__xfrm_state_destroy(x, true);
++		__xfrm_state_destroy(x);
+ }
+ 
+ static inline void xfrm_state_hold(struct xfrm_state *x)
+@@ -1114,6 +1125,47 @@ struct sec_path {
  
  struct sec_path *secpath_set(struct sk_buff *skb);
  
@@ -12624,6 +12599,15 @@ index 1484dd15a369..099d3ab51b20 100644
  static inline void
  secpath_reset(struct sk_buff *skb)
  {
+@@ -1705,7 +1757,7 @@ struct xfrmk_spdinfo {
+ 
+ struct xfrm_state *xfrm_find_acq_byseq(struct net *net, u32 mark, u32 seq, u32 pcpu_num);
+ int xfrm_state_delete(struct xfrm_state *x);
+-int xfrm_state_flush(struct net *net, u8 proto, bool task_valid, bool sync);
++int xfrm_state_flush(struct net *net, u8 proto, bool task_valid);
+ int xfrm_dev_state_flush(struct net *net, struct net_device *dev, bool task_valid);
+ int xfrm_dev_policy_flush(struct net *net, struct net_device *dev,
+ 			  bool task_valid);
 diff --git a/include/uapi/linux/fmd/Peripherals/fm_ioctls.h b/include/uapi/linux/fmd/Peripherals/fm_ioctls.h
 index 3cc27cafecba..e4838bd36562 100644
 --- a/include/uapi/linux/fmd/Peripherals/fm_ioctls.h
@@ -12721,72 +12705,58 @@ index c24f471bda76..5a9eda9a40b7 100644
  } ioc_fm_pcd_hash_table_params_t;
  
 diff --git a/include/uapi/linux/if.h b/include/uapi/linux/if.h
-index 797ba2c1562a..a8f014702f42 100644
+index 797ba2c1562a..ba46e4f8b021 100644
 --- a/include/uapi/linux/if.h
 +++ b/include/uapi/linux/if.h
-@@ -104,6 +104,9 @@ enum net_device_flags {
+@@ -104,6 +104,7 @@ enum net_device_flags {
  	IFF_DORMANT			= 1<<17, /* volatile */
  	IFF_ECHO			= 1<<18, /* volatile */
  #endif /* __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO */
-+#if defined(CONFIG_CPE_FAST_PATH)
 +	IFF_WIFI_OFLD		= 1<<19, /*Offload interface */
-+#endif
  };
  #endif /* __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO != 0 || __UAPI_DEF_IF_NET_DEVICE_FLAGS != 0 */
  
-@@ -133,6 +136,10 @@ enum net_device_flags {
+@@ -133,6 +134,8 @@ enum net_device_flags {
  #define IFF_ECHO			IFF_ECHO
  #endif /* __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO */
  
-+#if defined(CONFIG_CPE_FAST_PATH)
 +#define IFF_WIFI_OFLD		IFF_WIFI_OFLD
-+#endif
 +
  #define IFF_VOLATILE	(IFF_LOOPBACK|IFF_POINTOPOINT|IFF_BROADCAST|IFF_ECHO|\
  		IFF_MASTER|IFF_SLAVE|IFF_RUNNING|IFF_LOWER_UP|IFF_DORMANT)
  
 diff --git a/include/uapi/linux/if_arp.h b/include/uapi/linux/if_arp.h
-index 4783af9fe520..a876f01dff07 100644
+index 4783af9fe520..822e21ba5ebb 100644
 --- a/include/uapi/linux/if_arp.h
 +++ b/include/uapi/linux/if_arp.h
-@@ -29,6 +29,9 @@
+@@ -29,6 +29,7 @@
  /* ARP protocol HARDWARE identifiers. */
  #define ARPHRD_NETROM	0		/* from KA9Q: NET/ROM pseudo	*/
  #define ARPHRD_ETHER 	1		/* Ethernet 10Mbps		*/
-+#if defined(CONFIG_CPE_FAST_PATH)
 +#define ARPHRD_IPV6_IPV6_TUNNEL		ARPHRD_ETHER
-+#endif
  #define	ARPHRD_EETHER	2		/* Experimental Ethernet	*/
  #define	ARPHRD_AX25	3		/* AX.25 Level 2		*/
  #define	ARPHRD_PRONET	4		/* PROnet token ring		*/
 diff --git a/include/uapi/linux/if_tunnel.h b/include/uapi/linux/if_tunnel.h
-index e1a246dd8c62..69656f018bbb 100644
+index fda447945078..84cfc4f676a1 100644
 --- a/include/uapi/linux/if_tunnel.h
 +++ b/include/uapi/linux/if_tunnel.h
-@@ -21,6 +21,18 @@
+@@ -21,6 +21,11 @@
  #define SIOCADD6RD      (SIOCDEVPRIVATE + 9)
  #define SIOCDEL6RD      (SIOCDEVPRIVATE + 10)
  #define SIOCCHG6RD      (SIOCDEVPRIVATE + 11)
-+#ifdef CONFIG_CPE_4RD_TUNNEL
 +#define SIOCGET4RD		(SIOCDEVPRIVATE + 12)
 +#define SIOCADD4RD		(SIOCDEVPRIVATE + 13)
 +#define SIOCDEL4RD		(SIOCDEVPRIVATE + 14)
 +#define SIOCCHG4RD		(SIOCDEVPRIVATE + 15)
-+#endif
-+//#define COMCERTO_ETHERIPV4
-+#ifdef CONFIG_CPE_ETHERIP
-+/* SIOCCHG4RD is currently not used and even if it were, these two tunnels would never co-inside*/
-+/* MSPD Added */
 +#define SIOCISETHIPV4TUNNEL  (SIOCDEVPRIVATE + 15)
-+#endif
  
  #define GRE_CSUM	__cpu_to_be16(0x8000)
  #define GRE_ROUTING	__cpu_to_be16(0x4000)
-@@ -114,6 +126,22 @@ struct ip_tunnel_6rd {
+@@ -127,6 +132,20 @@ struct ip_tunnel_6rd {
  	__u16			relay_prefixlen;
  };
  
-+#ifdef CONFIG_CPE_4RD_TUNNEL
 +/* ip6 tnl 4rd parm -start  */
 +struct ip6_tnl_4rd {
 +	__be32                  prefix;
@@ -12800,20 +12770,18 @@ index e1a246dd8c62..69656f018bbb 100644
 +	__u16                   entry_num;
 +};
 +/* ip6 tnl 4rd parm -end  */
-+#endif
 +
  enum {
  	IFLA_GRE_UNSPEC,
  	IFLA_GRE_LINK,
 diff --git a/include/uapi/linux/ip6_tunnel.h b/include/uapi/linux/ip6_tunnel.h
-index 0245269b037c..a8e5aaa50313 100644
+index 0245269b037c..a53137afd06f 100644
 --- a/include/uapi/linux/ip6_tunnel.h
 +++ b/include/uapi/linux/ip6_tunnel.h
-@@ -53,4 +53,52 @@ struct ip6_tnl_parm2 {
+@@ -53,4 +53,50 @@ struct ip6_tnl_parm2 {
  	__be32			o_key;
  };
  
-+#ifdef CONFIG_CPE_4RD_TUNNEL
 +struct ip6_4rd_map_msg {
 +	__u32 reset;
 +	__u32 ifindex;
@@ -12859,18 +12827,16 @@ index 0245269b037c..a8e5aaa50313 100644
 +	rwlock_t map_lock;
 +};
 +#endif
-+#endif
 +
  #endif
 diff --git a/include/uapi/linux/netfilter/nf_conntrack_common.h b/include/uapi/linux/netfilter/nf_conntrack_common.h
-index 26071021e986..1203b26127c1 100644
+index 26071021e986..8dd5f5dd842d 100644
 --- a/include/uapi/linux/netfilter/nf_conntrack_common.h
 +++ b/include/uapi/linux/netfilter/nf_conntrack_common.h
-@@ -118,6 +118,16 @@ enum ip_conntrack_status {
+@@ -118,6 +118,14 @@ enum ip_conntrack_status {
  	IPS_HW_OFFLOAD_BIT = 15,
  	IPS_HW_OFFLOAD = (1 << IPS_HW_OFFLOAD_BIT),
  
-+#ifdef CONFIG_CPE_FAST_PATH
 +	/* Connection cannot expire */
 +	IPS_PERMANENT_BIT = 16,
 +	IPS_PERMANENT = (1 << IPS_PERMANENT_BIT),
@@ -12878,12 +12844,11 @@ index 26071021e986..1203b26127c1 100644
 +	/* Connection is assured by DPI application */
 +	IPS_DPI_ALLOWED_BIT = 17,
 +	IPS_DPI_ALLOWED = (1 << IPS_DPI_ALLOWED_BIT),
-+#endif
 +
  	/* Be careful here, modifying these bits can make things messy,
  	 * so don't let users modify them directly.
  	 */
-@@ -126,7 +136,7 @@ enum ip_conntrack_status {
+@@ -126,7 +134,7 @@ enum ip_conntrack_status {
  				 IPS_SEQ_ADJUST | IPS_TEMPLATE | IPS_UNTRACKED |
  				 IPS_OFFLOAD | IPS_HW_OFFLOAD),
  
@@ -12892,7 +12857,7 @@ index 26071021e986..1203b26127c1 100644
  };
  
  /* Connection tracking event types */
-@@ -143,6 +153,7 @@ enum ip_conntrack_events {
+@@ -143,6 +151,7 @@ enum ip_conntrack_events {
  	IPCT_NATSEQADJ = IPCT_SEQADJ,
  	IPCT_SECMARK,		/* new security mark has been set */
  	IPCT_LABEL,		/* new connlabel has been set */
@@ -12901,40 +12866,36 @@ index 26071021e986..1203b26127c1 100644
  #ifdef __KERNEL__
  	__IPCT_MAX
 diff --git a/include/uapi/linux/netfilter/nf_conntrack_tuple_common.h b/include/uapi/linux/netfilter/nf_conntrack_tuple_common.h
-index 64390fac6f7e..88ad3a41c2c5 100644
+index 64390fac6f7e..e8c7f7dadb0b 100644
 --- a/include/uapi/linux/netfilter/nf_conntrack_tuple_common.h
 +++ b/include/uapi/linux/netfilter/nf_conntrack_tuple_common.h
-@@ -14,6 +14,9 @@ enum ip_conntrack_dir {
+@@ -14,6 +14,8 @@ enum ip_conntrack_dir {
  	IP_CT_DIR_MAX
  };
  
-+#ifdef CONFIG_CPE_4RD_TUNNEL
 +#define IP_NAT_RANGE_4RD_NAPT 16
-+#endif
++
  /* The protocol-specific manipulable parts of the tuple: always in
   * network order
   */
 diff --git a/include/uapi/linux/netfilter/nfnetlink_conntrack.h b/include/uapi/linux/netfilter/nfnetlink_conntrack.h
-index c2ac7269acf7..541d00ef4eca 100644
+index c2ac7269acf7..8a40005bf7ee 100644
 --- a/include/uapi/linux/netfilter/nfnetlink_conntrack.h
 +++ b/include/uapi/linux/netfilter/nfnetlink_conntrack.h
-@@ -57,6 +57,11 @@ enum ctattr_type {
+@@ -57,6 +57,9 @@ enum ctattr_type {
  	CTA_SYNPROXY,
  	CTA_FILTER,
  	CTA_STATUS_MASK,
-+#ifdef CONFIG_CPE_FAST_PATH
 +	CTA_QOSCONNMARK,
 +	CTA_LAYERSCAPE_FP_ORIG,
 +	CTA_LAYERSCAPE_FP_REPLY,
-+#endif
  	__CTA_MAX
  };
  #define CTA_MAX (__CTA_MAX - 1)
-@@ -242,6 +247,22 @@ enum ctattr_secctx {
+@@ -242,6 +245,18 @@ enum ctattr_secctx {
  };
  #define CTA_SECCTX_MAX (__CTA_SECCTX_MAX - 1)
  
-+#if defined(CONFIG_CPE_FAST_PATH)
 +enum ctattr_comcerto_fp {
 +	CTA_COMCERTO_FP_UNSPEC,
 +	CTA_COMCERTO_FP_MARK,
@@ -12942,13 +12903,10 @@ index c2ac7269acf7..541d00ef4eca 100644
 +	CTA_COMCERTO_FP_IIF,
 +	CTA_COMCERTO_FP_UNDERLYING_IIF,
 +	CTA_COMCERTO_FP_UNDERLYING_VID,
-+#ifndef IPSEC_FLOW_CACHE
 +	CTA_COMCERTO_FP_XFRM_HANDLE,
-+#endif
 +	__CTA_COMCERTO_FP_MAX
 +};
 +#define CTA_COMCERTO_FP_MAX (__CTA_COMCERTO_FP_MAX - 1)
-+#endif
 +
  enum ctattr_stats_cpu {
  	CTA_STATS_UNSPEC,
@@ -13048,21 +13006,17 @@ index 000000000000..6f80bd016c40
 +
 +
 diff --git a/include/uapi/linux/netlink.h b/include/uapi/linux/netlink.h
-index f87aaf28a649..75b0b7099cce 100644
+index f87aaf28a649..b21fa5669175 100644
 --- a/include/uapi/linux/netlink.h
 +++ b/include/uapi/linux/netlink.h
-@@ -30,9 +30,17 @@
+@@ -30,9 +30,13 @@
  #define NETLINK_CRYPTO		21	/* Crypto layer */
  #define NETLINK_SMC		22	/* SMC monitoring */
  
-+#ifdef CONFIG_CPE_FAST_PATH
 +#define NETLINK_FF              30
 +#define NETLINK_KEY             32
 +#define NETLINK_L2FLOW          33
 +#define MAX_LINKS 64
-+#else
-+#define MAX_LINKS 32       
-+#endif
 +
  #define NETLINK_INET_DIAG	NETLINK_SOCK_DIAG
  
@@ -13071,35 +13025,31 @@ index f87aaf28a649..75b0b7099cce 100644
  struct sockaddr_nl {
  	__kernel_sa_family_t	nl_family;	/* AF_NETLINK	*/
 diff --git a/include/uapi/linux/pfkeyv2.h b/include/uapi/linux/pfkeyv2.h
-index 8abae1f6749c..6472850001cd 100644
+index 8abae1f6749c..e92494a1ac99 100644
 --- a/include/uapi/linux/pfkeyv2.h
 +++ b/include/uapi/linux/pfkeyv2.h
-@@ -281,6 +281,9 @@ struct sadb_x_filter {
+@@ -281,6 +281,7 @@ struct sadb_x_filter {
  #define SADB_SAFLAGS_NOPMTUDISC	0x20000000
  #define SADB_SAFLAGS_DECAP_DSCP	0x40000000
  #define SADB_SAFLAGS_NOECN	0x80000000
-+#if defined(CONFIG_INET_IPSEC_OFFLOAD) || defined(CONFIG_INET6_IPSEC_OFFLOAD)
 +#define SADB_SAFLAGS_ESN	0x01000000
-+#endif
  
  /* Security Association states */
  #define SADB_SASTATE_LARVAL	0
 diff --git a/include/uapi/linux/ppp-ioctl.h b/include/uapi/linux/ppp-ioctl.h
-index 1cc5ce0ae062..debf115544d9 100644
+index 1cc5ce0ae062..d1869d3f1bd4 100644
 --- a/include/uapi/linux/ppp-ioctl.h
 +++ b/include/uapi/linux/ppp-ioctl.h
-@@ -117,6 +117,9 @@ struct pppol2tp_ioc_stats {
+@@ -117,6 +117,7 @@ struct pppol2tp_ioc_stats {
  #define PPPIOCGL2TPSTATS _IOR('t', 54, struct pppol2tp_ioc_stats)
  #define PPPIOCBRIDGECHAN _IOW('t', 53, int)	/* bridge one channel to another */
  #define PPPIOCUNBRIDGECHAN _IO('t', 52)	/* unbridge channel */
-+#if defined(CONFIG_CPE_FAST_PATH)
 +#define PPPIOCSFPPIDLE	_IOW('t', 51, struct ppp_idle)	/* Set the FPP stats */
-+#endif
  
  #define SIOCGPPPSTATS   (SIOCDEVPRIVATE + 0)
  #define SIOCGPPPVER     (SIOCDEVPRIVATE + 1)	/* NEVER change this!! */
 diff --git a/include/uapi/linux/rtnetlink.h b/include/uapi/linux/rtnetlink.h
-index db7254d52d93..729d6ac8b11f 100644
+index 795736ef4217..441830a0fab1 100644
 --- a/include/uapi/linux/rtnetlink.h
 +++ b/include/uapi/linux/rtnetlink.h
 @@ -151,6 +151,16 @@ enum {
@@ -13120,10 +13070,32 @@ index db7254d52d93..729d6ac8b11f 100644
  	RTM_NEWCHAIN = 100,
  #define RTM_NEWCHAIN RTM_NEWCHAIN
 diff --git a/net/Kconfig b/net/Kconfig
-index 5b3c54974d06..7c02d13c3fae 100644
+index 5f179d2e74c2..3c8d6bd654ae 100644
 --- a/net/Kconfig
 +++ b/net/Kconfig
-@@ -125,6 +125,21 @@ config INET
+@@ -26,12 +26,6 @@ menuconfig NET
+ 
+ if NET
+ 
+-config ETHERNET_PACKET_MANGLE
+-	bool
+-	help
+-	  This option can be selected by phy drivers that need to mangle
+-	  packets going in or out of an ethernet device.
+-
+ config WANT_COMPAT_NETLINK_MESSAGES
+ 	bool
+ 	help
+@@ -74,7 +68,7 @@ config SKB_EXTENSIONS
+ 
+ config NET_DEVMEM
+ 	def_bool y
+-	depends on DMA_SHARED_BUFFER=y
++	depends on DMA_SHARED_BUFFER
+ 	depends on GENERIC_ALLOCATOR
+ 	depends on PAGE_POOL
+ 
+@@ -131,6 +125,13 @@ config INET
  	  Short answer: say Y.
  
  if INET
@@ -13134,22 +13106,31 @@ index 5b3c54974d06..7c02d13c3fae 100644
 +			help
 +		Support for Fast Path offload.
 +
-+config CPE_4RD_TUNNEL
-+	bool "4RD IPv6 Transition Tunnel Support"
-+	depends on CPE_FAST_PATH
-+	select IPV6_TUNNEL
-+	help
-+	  Support for 4RD (IPv4 Residual Deployment) tunneling for
-+	  IPv6 transition mechanisms like MAP-E and MAP-T.
-+
  source "net/ipv4/Kconfig"
  source "net/ipv6/Kconfig"
  source "net/netlabel/Kconfig"
+@@ -271,6 +272,7 @@ source "net/ieee802154/Kconfig"
+ source "net/mac802154/Kconfig"
+ source "net/sched/Kconfig"
+ source "net/dcb/Kconfig"
++source "net/tsn/Kconfig"
+ source "net/dns_resolver/Kconfig"
+ source "net/batman-adv/Kconfig"
+ source "net/openvswitch/Kconfig"
+@@ -493,7 +495,7 @@ config NET_DEVLINK
+ 	default n
+ 
+ config PAGE_POOL
+-	bool "Page pool support"
++	bool
+ 
+ config PAGE_POOL_STATS
+ 	default n
 diff --git a/net/bridge/br.c b/net/bridge/br.c
-index ed08717541fe..346524427218 100644
+index 35e9842f4203..440cf3cf957d 100644
 --- a/net/bridge/br.c
 +++ b/net/bridge/br.c
-@@ -474,6 +474,60 @@ static void __exit br_deinit(void)
+@@ -479,6 +479,60 @@ static void __exit br_deinit(void)
  	br_fdb_fini();
  }
  
@@ -13375,7 +13356,7 @@ index 642b8ccaae8e..9cdb060ecff5 100644
  int br_fdb_dump(struct sk_buff *skb,
  		struct netlink_callback *cb,
 diff --git a/net/bridge/br_forward.c b/net/bridge/br_forward.c
-index e19b583ff2c6..52de8201979d 100644
+index 3d4b3b12cfca..10d8b228a46f 100644
 --- a/net/bridge/br_forward.c
 +++ b/net/bridge/br_forward.c
 @@ -33,7 +33,11 @@ static inline int should_deliver(const struct net_bridge_port *p,
@@ -13392,7 +13373,7 @@ index e19b583ff2c6..52de8201979d 100644
  
  	br_drop_fake_rtable(skb);
 diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
-index ceaa5a89b947..ee1280137ed9 100644
+index 9e3116b6f43b..6b6b3623ec1c 100644
 --- a/net/bridge/br_input.c
 +++ b/net/bridge/br_input.c
 @@ -67,6 +67,10 @@ static int br_pass_frame_up(struct sk_buff *skb, bool promisc)
@@ -13417,7 +13398,7 @@ index ceaa5a89b947..ee1280137ed9 100644
  	if (IS_ENABLED(CONFIG_INET) &&
  	    (skb->protocol == htons(ETH_P_ARP) ||
  	     skb->protocol == htons(ETH_P_RARP))) {
-@@ -209,6 +217,10 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
+@@ -210,6 +218,10 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
  
  		if (now != dst->used)
  			dst->used = now;
@@ -13429,7 +13410,7 @@ index ceaa5a89b947..ee1280137ed9 100644
  	} else {
  		if (!mcast_hit)
 diff --git a/net/bridge/br_private.h b/net/bridge/br_private.h
-index 5026a256bf92..9dc92309d784 100644
+index 741b0b8c4bab..9e70325072ff 100644
 --- a/net/bridge/br_private.h
 +++ b/net/bridge/br_private.h
 @@ -617,6 +617,11 @@ struct br_input_skb_cb {
@@ -13472,10 +13453,10 @@ index 75204d36d7f9..0ee39d723422 100644
  
  static int br_stp_call_user(struct net_bridge *br, char *arg)
 diff --git a/net/bridge/br_vlan.c b/net/bridge/br_vlan.c
-index dae576a6d026..c6fbadfb4af0 100644
+index 13d6c3f51c29..77aa95275daa 100644
 --- a/net/bridge/br_vlan.c
 +++ b/net/bridge/br_vlan.c
-@@ -520,9 +520,21 @@ struct sk_buff *br_handle_vlan(struct net_bridge *br,
+@@ -517,9 +517,21 @@ struct sk_buff *br_handle_vlan(struct net_bridge *br,
  	 * hardware on each egress port as appropriate. So only strip the VLAN
  	 * header if forwarding offload is not being used.
  	 */
@@ -13498,7 +13479,7 @@ index dae576a6d026..c6fbadfb4af0 100644
  
  	if (p && (p->flags & BR_VLAN_TUNNEL) &&
  	    br_handle_egress_vlan_tunnel(skb, v)) {
-@@ -603,6 +615,9 @@ static bool __allowed_ingress(const struct net_bridge *br,
+@@ -600,6 +612,9 @@ static bool __allowed_ingress(const struct net_bridge *br,
  			 */
  			skb->vlan_tci |= pvid;
  
@@ -13508,7 +13489,7 @@ index dae576a6d026..c6fbadfb4af0 100644
  		/* if snooping and stats are disabled we can avoid the lookup */
  		if (!br_opt_get(br, BROPT_MCAST_VLAN_SNOOPING_ENABLED) &&
  		    !br_opt_get(br, BROPT_VLAN_STATS_ENABLED)) {
-@@ -632,6 +647,9 @@ static bool __allowed_ingress(const struct net_bridge *br,
+@@ -629,6 +644,9 @@ static bool __allowed_ingress(const struct net_bridge *br,
  		u64_stats_update_end(&stats->syncp);
  	}
  
@@ -13519,7 +13500,7 @@ index dae576a6d026..c6fbadfb4af0 100644
  
  	return true;
 diff --git a/net/core/dev.c b/net/core/dev.c
-index cfd32bd02a69..b3add07b4c7d 100644
+index 30a22db52d58..ed80fd3d1bc2 100644
 --- a/net/core/dev.c
 +++ b/net/core/dev.c
 @@ -172,6 +172,12 @@ static int call_netdevice_notifiers_extack(unsigned long val,
@@ -13535,7 +13516,7 @@ index cfd32bd02a69..b3add07b4c7d 100644
  static DEFINE_MUTEX(ifalias_mutex);
  
  /* protects napi_hash addition/deletion and napi_gen_id */
-@@ -3758,10 +3764,17 @@ static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device
+@@ -3763,10 +3769,17 @@ static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device
  			skb = segs;
  		}
  	} else {
@@ -13557,7 +13538,7 @@ index cfd32bd02a69..b3add07b4c7d 100644
  		/* If packet is not checksummed and device does not
  		 * support checksumming for this protocol, complete
  		 * checksumming here.
-@@ -4544,6 +4557,83 @@ int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
+@@ -4549,6 +4562,83 @@ int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
  }
  EXPORT_SYMBOL(__dev_queue_xmit);
  
@@ -13641,21 +13622,31 @@ index cfd32bd02a69..b3add07b4c7d 100644
  int __dev_direct_xmit(struct sk_buff *skb, u16 queue_id)
  {
  	struct net_device *dev = skb->dev;
-@@ -5552,6 +5642,13 @@ static int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
+@@ -5557,6 +5647,14 @@ static int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
  
  	trace_netif_receive_skb(skb);
  
 +#ifdef CONFIG_CPE_FAST_PATH
-+	/* ifindex of device we arrived on, now skb->skb_iif always tracks skb->dev */
++	/* ifindex of device we arrived on,now skb->skb_iif
++	always tracks skb->dev */
 +	if (!skb->iif_index)
 +		skb->iif_index = skb->dev->ifindex;
-+	if (!skb->underlying_iif)
++	if(!skb->underlying_iif)
 +		skb->underlying_iif = skb->dev->ifindex;
 +#endif
  	orig_dev = skb->dev;
  
  	skb_reset_network_header(skb);
-@@ -11045,10 +11142,28 @@ struct rtnl_link_stats64 *dev_get_stats(struct net_device *dev,
+@@ -6898,8 +6996,6 @@ static int __napi_poll(struct napi_struct *n, bool *repoll)
+ 		napi_gro_flush(n, HZ >= 1000);
+ 	}
+ 
+-	gro_normal_list(n);
+-
+ 	/* Some drivers may have called napi_schedule
+ 	 * prior to exhausting their budget.
+ 	 */
+@@ -11050,10 +11146,28 @@ struct rtnl_link_stats64 *dev_get_stats(struct net_device *dev,
  			storage->rx_otherhost_dropped += READ_ONCE(core_stats->rx_otherhost_dropped);
  		}
  	}
@@ -13701,7 +13692,7 @@ index 0ad549b07e03..6e1c5724b7f5 100644
  	/* eth_type_trans() assumes pkt_type is PACKET_HOST */
  	skb->pkt_type = PACKET_HOST;
 diff --git a/net/core/rtnetlink.c b/net/core/rtnetlink.c
-index 28ef506b10b0..89df14623bc7 100644
+index fc3e526cf42e..fda53ffe754f 100644
 --- a/net/core/rtnetlink.c
 +++ b/net/core/rtnetlink.c
 @@ -800,9 +800,17 @@ int rtnetlink_put_metrics(struct sk_buff *skb, u32 *metrics)
@@ -13740,21 +13731,14 @@ index 28ef506b10b0..89df14623bc7 100644
  	}
  
  	if (!valid) {
-@@ -6594,6 +6613,14 @@ static int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
- 	family = ((struct rtgenmsg *)nlmsg_data(nlh))->rtgen_family;
- 	kind = rtnl_msgtype_kind(type);
+@@ -4153,6 +4172,7 @@ void rtmsg_ifinfo(int type, struct net_device *dev, unsigned int change,
+ 	rtmsg_ifinfo_event(type, dev, change, rtnl_get_event(0), flags,
+ 			   NULL, 0, portid, nlh);
+ }
++EXPORT_SYMBOL(rtmsg_ifinfo);
  
-+#ifdef CONFIG_CPE_4RD_TUNNEL
-+	/* NXP ASK 4RD workaround: RTM_GET4RD (99) doesn't follow standard rtnetlink
-+	 * alignment. Standard GET messages should be 4n+2, but 99 & 3 = 3 (SET).
-+	 * Override kind to GET so dump requests reach inet6_dump4rd_mrule(). */
-+	if (type == RTM_GET4RD - RTM_BASE)
-+		kind = RTNL_KIND_GET;
-+#endif
-+
- 	if (kind != RTNL_KIND_GET && !netlink_net_capable(skb, CAP_NET_ADMIN))
- 		return -EPERM;
- 
+ void rtmsg_ifinfo_newnet(int type, struct net_device *dev, unsigned int change,
+ 			 gfp_t flags, int *new_nsid, int new_ifindex)
 diff --git a/net/core/skbuff.c b/net/core/skbuff.c
 index 578513eb738e..11016b1befd7 100644
 --- a/net/core/skbuff.c
@@ -13855,7 +13839,7 @@ index 578513eb738e..11016b1befd7 100644
  	nf_reset_trace(skb);
  
 diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
-index 6d2c97f8e9ef..715781f713d1 100644
+index 4d51a9695415..738235a33c1b 100644
 --- a/net/ipv4/Kconfig
 +++ b/net/ipv4/Kconfig
 @@ -392,6 +392,12 @@ config INET_ESPINTCP
@@ -13872,7 +13856,7 @@ index 6d2c97f8e9ef..715781f713d1 100644
  	tristate "IP: IPComp transformation"
  	select INET_XFRM_TUNNEL
 diff --git a/net/ipv4/ip_output.c b/net/ipv4/ip_output.c
-index 49811c9281d4..fbd7fcb79445 100644
+index 0bda561aa8a8..339d22ff0f27 100644
 --- a/net/ipv4/ip_output.c
 +++ b/net/ipv4/ip_output.c
 @@ -102,6 +102,17 @@ int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
@@ -13911,7 +13895,7 @@ index 49811c9281d4..fbd7fcb79445 100644
 +	else
 +#endif /* endif for CONFIG_INET_IPSEC_OFFLOAD */
  	return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
- 		       net, sk, skb, NULL, skb_dst(skb)->dev,
+ 		       net, sk, skb, NULL, skb_dst_dev(skb),
  		       dst_output);
 @@ -308,7 +330,11 @@ static int __ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *
  	if (skb_is_gso(skb))
@@ -13926,7 +13910,7 @@ index 49811c9281d4..fbd7fcb79445 100644
  		return ip_fragment(net, sk, skb, mtu, ip_finish_output2);
  
  	return ip_finish_output2(net, sk, skb);
-@@ -431,6 +457,13 @@ int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
+@@ -434,6 +460,15 @@ int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
  	skb->dev = dev;
  	skb->protocol = htons(ETH_P_IP);
  
@@ -13934,13 +13918,15 @@ index 49811c9281d4..fbd7fcb79445 100644
 +	/* Bypass invoking post routing hooks since the tunnel header and ESP
 +	 * processing is not done in slow path for IPSec offloaded cases
 +	 */
-+	if (skb->ipsec_offload)
++	if (skb->ipsec_offload) {
++		rcu_read_unlock();
 +		return ip_finish_output(net, sk, skb);
++	}
 +#endif
- 	return NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
- 			    net, sk, skb, indev, dev,
- 			    ip_finish_output,
-@@ -561,6 +594,9 @@ static void ip_copy_metadata(struct sk_buff *to, struct sk_buff *from)
+ 	ret_val = NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
+ 				net, sk, skb, indev, dev,
+ 				ip_finish_output,
+@@ -566,6 +601,9 @@ static void ip_copy_metadata(struct sk_buff *to, struct sk_buff *from)
  	skb_dst_copy(to, from);
  	to->dev = from->dev;
  	to->mark = from->mark;
@@ -13951,7 +13937,7 @@ index 49811c9281d4..fbd7fcb79445 100644
  	skb_copy_hash(to, from);
  
 diff --git a/net/ipv4/ip_tunnel.c b/net/ipv4/ip_tunnel.c
-index 09b73acf037a..1083fe44416d 100644
+index 7c77d06372d1..708663706279 100644
 --- a/net/ipv4/ip_tunnel.c
 +++ b/net/ipv4/ip_tunnel.c
 @@ -438,6 +438,9 @@ int ip_tunnel_rcv(struct ip_tunnel *tunnel, struct sk_buff *skb,
@@ -14099,10 +14085,10 @@ index f0e5431c2d46..79fcee925ede 100644
  	skb_copy_hash(to, from);
  
 diff --git a/net/ipv6/ip6_tunnel.c b/net/ipv6/ip6_tunnel.c
-index 5350c9bb2319..7e874acef029 100644
+index ff58b562758e..c09e0748dba2 100644
 --- a/net/ipv6/ip6_tunnel.c
 +++ b/net/ipv6/ip6_tunnel.c
-@@ -19,6 +19,7 @@
+@@ -22,6 +22,7 @@
  #include <linux/capability.h>
  #include <linux/errno.h>
  #include <linux/types.h>
@@ -14110,7 +14096,7 @@ index 5350c9bb2319..7e874acef029 100644
  #include <linux/sockios.h>
  #include <linux/icmp.h>
  #include <linux/if.h>
-@@ -75,6 +76,11 @@ static u32 HASH(const struct in6_addr *addr1, const struct in6_addr *addr2)
+@@ -78,6 +79,11 @@ static u32 HASH(const struct in6_addr *addr)
  	return hash_32(hash, IP6_TUNNEL_HASH_SIZE_SHIFT);
  }
  
@@ -14122,7 +14108,7 @@ index 5350c9bb2319..7e874acef029 100644
  static int ip6_tnl_dev_init(struct net_device *dev);
  static void ip6_tnl_dev_setup(struct net_device *dev);
  static struct rtnl_link_ops ip6_link_ops __read_mostly;
-@@ -90,13 +96,509 @@ struct ip6_tnl_net {
+@@ -93,13 +99,509 @@ struct ip6_tnl_net {
  	struct ip6_tnl __rcu *collect_md_tun;
  };
  
@@ -14632,7 +14618,7 @@ index 5350c9bb2319..7e874acef029 100644
  
  /**
   * ip6_tnl_lookup - fetch tunnel matching the end-point addresses
-@@ -1196,10 +1698,27 @@ int ip6_tnl_xmit(struct sk_buff *skb, struct net_device *dev, __u8 dsfield,
+@@ -1344,10 +1846,27 @@ int ip6_tnl_xmit(struct sk_buff *skb, struct net_device *dev, __u8 dsfield,
  		       IPV6_MIN_MTU : IPV4_MIN_MTU);
  
  	skb_dst_update_pmtu_no_confirm(skb, mtu);
@@ -14664,7 +14650,7 @@ index 5350c9bb2319..7e874acef029 100644
  	}
  
  	if (t->err_count > 0) {
-@@ -1636,6 +2155,10 @@ ip6_tnl_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
+@@ -1805,6 +2324,10 @@ ip6_tnl_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
  	struct ip6_tnl *t = netdev_priv(dev);
  	struct net *net = t->net;
  	struct ip6_tnl_net *ip6n = net_generic(net, ip6_tnl_net_id);
@@ -14675,7 +14661,7 @@ index 5350c9bb2319..7e874acef029 100644
  
  	memset(&p1, 0, sizeof(p1));
  
-@@ -1716,9 +2239,120 @@ ip6_tnl_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
+@@ -1885,9 +2408,120 @@ ip6_tnl_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
  		err = 0;
  		unregister_netdevice(dev);
  		break;
@@ -14731,7 +14717,7 @@ index 5350c9bb2319..7e874acef029 100644
 +				t->ip4rd.psid_offsetlen = ip4rd.psid_offsetlen;
 +
 +				ip6_tnl_4rd_update_parms(t);
-+				dst_cache_reset(&t->dst_cache);
++				ip6_tnl_dst_reset(t);
 +				ip6_tnl_link_config(t);
 +			}
 +			/* DBG */
@@ -14749,7 +14735,7 @@ index 5350c9bb2319..7e874acef029 100644
 +				t->ip4rd.laddr4 = 0;
 +				t->ip4rd.port_set_id = t->ip4rd.port_set_id_len = 0;
 +
-+				dst_cache_reset(&t->dst_cache);
++				ip6_tnl_dst_reset(t);
 +				ip6_tnl_link_config(t);
 +			}else{
 +				err = ip6_tnl_4rd_mr_delete( ip4rd.entry_num , &t->ip4rd, t->dev);  /* modified by MSPD */
@@ -14796,7 +14782,7 @@ index 5350c9bb2319..7e874acef029 100644
  	return err;
  }
  
-@@ -2313,9 +2947,24 @@ static int __init ip6_tunnel_init(void)
+@@ -2577,9 +3211,24 @@ static int __init ip6_tunnel_init(void)
  	if (!ipv6_mod_enabled())
  		return -EOPNOTSUPP;
  
@@ -14821,18 +14807,7 @@ index 5350c9bb2319..7e874acef029 100644
  
  	err = xfrm6_tunnel_register(&ip4ip6_handler, AF_INET);
  	if (err < 0) {
-@@ -2337,6 +2986,10 @@ static int __init ip6_tunnel_init(void)
- 		}
- 	}
- 
-+#ifdef CONFIG_CPE_4RD_TUNNEL
-+	rtnl_register(PF_UNSPEC, RTM_GET4RD, NULL, inet6_dump4rd_mrule, 0);
-+#endif
-+
- 	err = rtnl_link_register(&ip6_link_ops);
- 	if (err < 0)
- 		goto rtnl_link_failed;
-@@ -2352,6 +3005,10 @@ static int __init ip6_tunnel_init(void)
+@@ -2616,6 +3265,10 @@ static int __init ip6_tunnel_init(void)
  	xfrm6_tunnel_deregister(&ip4ip6_handler, AF_INET);
  out_ip4ip6:
  	unregister_pernet_device(&ip6_tnl_net_ops);
@@ -14843,16 +14818,6 @@ index 5350c9bb2319..7e874acef029 100644
  out_pernet:
  	return err;
  }
-@@ -2362,6 +3019,9 @@ static int __init ip6_tunnel_init(void)
- 
- static void __exit ip6_tunnel_cleanup(void)
- {
-+#ifdef CONFIG_CPE_4RD_TUNNEL
-+	rtnl_unregister(PF_UNSPEC, RTM_GET4RD);
-+#endif
- 	rtnl_link_unregister(&ip6_link_ops);
- 	if (xfrm6_tunnel_deregister(&ip4ip6_handler, AF_INET))
- 		pr_info("%s: can't deregister ip4ip6\n", __func__);
 diff --git a/net/ipv6/netfilter/ip6t_NPT.c b/net/ipv6/netfilter/ip6t_NPT.c
 index 787c74aa85e3..92a8c3804d40 100644
 --- a/net/ipv6/netfilter/ip6t_NPT.c
@@ -14962,7 +14927,7 @@ index 3c15a0ae228e..338f3d6674c3 100644
  
  		if (packet_is_spoofed(skb, iph, tunnel)) {
 diff --git a/net/ipv6/udp.c b/net/ipv6/udp.c
-index 57e38e5e4be9..a473ad53f94a 100644
+index 9b93df668025..5627856be0b7 100644
 --- a/net/ipv6/udp.c
 +++ b/net/ipv6/udp.c
 @@ -784,7 +784,9 @@ static int udpv6_queue_rcv_one_skb(struct sock *sk, struct sk_buff *skb)
@@ -14999,7 +14964,7 @@ index 1f19b6f14484..693146113299 100644
  	memcpy(&fl6.daddr, params->daddr, sizeof(fl6.daddr));
  	if (params->saddr)
 diff --git a/net/key/af_key.c b/net/key/af_key.c
-index c56bb4f451e6..6635d476a1ed 100644
+index 9dea2b26e506..add4d7269c15 100644
 --- a/net/key/af_key.c
 +++ b/net/key/af_key.c
 @@ -26,8 +26,183 @@
@@ -15946,10 +15911,10 @@ index c56bb4f451e6..6635d476a1ed 100644
  	return err;
  
 diff --git a/net/netfilter/Kconfig b/net/netfilter/Kconfig
-index df2dc21304ef..14ae67e70816 100644
+index e10e3b879121..87c5f0940c11 100644
 --- a/net/netfilter/Kconfig
 +++ b/net/netfilter/Kconfig
-@@ -790,6 +790,28 @@ config NETFILTER_XT_CONNMARK
+@@ -788,6 +788,28 @@ config NETFILTER_XT_CONNMARK
  	ctmark), similarly to the packet mark (nfmark). Using this
  	target and match, you can set and match on this mark.
  
@@ -15979,7 +15944,7 @@ index df2dc21304ef..14ae67e70816 100644
  	tristate 'set target and match support'
  	depends on IP_SET
 diff --git a/net/netfilter/Makefile b/net/netfilter/Makefile
-index f0aa4d7ef499..6af83a10050b 100644
+index e9d11858a49b..1e4a9fabc46b 100644
 --- a/net/netfilter/Makefile
 +++ b/net/netfilter/Makefile
 @@ -22,6 +22,7 @@ nf_conntrack-$(CONFIG_DEBUG_INFO_BTF) += nf_conntrack_bpf.o
@@ -16499,7 +16464,7 @@ index 000000000000..c7c0686e5770
 +module_exit(fp_netfilter_exit);
 +
 diff --git a/net/netfilter/nf_conntrack_core.c b/net/netfilter/nf_conntrack_core.c
-index f5bde4f13958..8ba03e39733b 100644
+index cdcc01fcd30f..3300163381d3 100644
 --- a/net/netfilter/nf_conntrack_core.c
 +++ b/net/netfilter/nf_conntrack_core.c
 @@ -10,7 +10,7 @@
@@ -16914,10 +16879,10 @@ index 0c1d086e96cb..d95187c90d7e 100644
  	nf_ct_refresh_acct(ct, ctinfo, skb, timeout);
  
 diff --git a/net/netfilter/nf_conntrack_standalone.c b/net/netfilter/nf_conntrack_standalone.c
-index 3ea60ff7a6a4..f1aab3a1066a 100644
+index 39fd99016360..5997e1025cb2 100644
 --- a/net/netfilter/nf_conntrack_standalone.c
 +++ b/net/netfilter/nf_conntrack_standalone.c
-@@ -336,6 +336,13 @@ static int ct_seq_show(struct seq_file *s, void *v)
+@@ -337,6 +337,13 @@ static int ct_seq_show(struct seq_file *s, void *v)
  
  	if (seq_has_overflowed(s))
  		goto release;
@@ -16931,7 +16896,7 @@ index 3ea60ff7a6a4..f1aab3a1066a 100644
  
  	seq_print_acct(s, ct, IP_CT_DIR_ORIGINAL);
  
-@@ -361,6 +368,12 @@ static int ct_seq_show(struct seq_file *s, void *v)
+@@ -362,6 +369,12 @@ static int ct_seq_show(struct seq_file *s, void *v)
  #if defined(CONFIG_NF_CONNTRACK_MARK)
  	seq_printf(s, "mark=%u ", READ_ONCE(ct->mark));
  #endif
@@ -17213,7 +17178,7 @@ index 000000000000..771edb1f812f
 +
 +
 diff --git a/net/wireless/Kconfig b/net/wireless/Kconfig
-index 10345388ad13..722332d6dcc9 100644
+index c141a1b74240..0607b1e7ccc9 100644
 --- a/net/wireless/Kconfig
 +++ b/net/wireless/Kconfig
 @@ -1,6 +1,6 @@
@@ -17558,7 +17523,7 @@ index 841a60a6fbfe..041c92b56e38 100644
  		spin_lock(&x->lock);
  
 diff --git a/net/xfrm/xfrm_output.c b/net/xfrm/xfrm_output.c
-index a30538a980cc..6b63d54a4e51 100644
+index a30538a980cc..e1bba4100c75 100644
 --- a/net/xfrm/xfrm_output.c
 +++ b/net/xfrm/xfrm_output.c
 @@ -67,6 +67,10 @@ static int xfrm4_transport_output(struct xfrm_state *x, struct sk_buff *skb)
@@ -17698,7 +17663,42 @@ index a30538a980cc..6b63d54a4e51 100644
  	kfree_skb(skb);
  out:
  	return err;
-@@ -909,10 +987,20 @@ static int xfrm6_extract_output(struct xfrm_state *x, struct sk_buff *skb)
+@@ -766,8 +844,12 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
+ 		/* Exclusive direct xmit for tunnel mode, as
+ 		 * some filtering or matching rules may apply
+ 		 * in transport mode.
++		 * Locally generated packets also require
++		 * the normal XFRM path for L2 header setup,
++		 * as the hardware needs the L2 header to match
++		 * for encryption, so skip direct output as well.
+ 		 */
+-		if (x->props.mode == XFRM_MODE_TUNNEL)
++		if (x->props.mode == XFRM_MODE_TUNNEL && !skb->sk)
+ 			return xfrm_dev_direct_output(sk, x, skb);
+ 
+ 		return xfrm_output_resume(sk, skb, 0);
+@@ -862,10 +944,20 @@ static int xfrm4_extract_output(struct xfrm_state *x, struct sk_buff *skb)
+ 	if (err)
+ 		return err;
+ 
++#if defined(CONFIG_INET_IPSEC_OFFLOAD) || defined(CONFIG_INET6_IPSEC_OFFLOAD)
++	if (skb->ipsec_offload == 0) {
++		XFRM_MODE_SKB_CB(skb)->protocol = ip_hdr(skb)->protocol;
++		xfrm4_extract_header(skb);
++		return 0;
++	} else {
++		return 0;
++	}
++#else
+ 	XFRM_MODE_SKB_CB(skb)->protocol = ip_hdr(skb)->protocol;
+ 
+ 	xfrm4_extract_header(skb);
+ 	return 0;
++#endif
+ }
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+@@ -909,10 +1001,20 @@ static int xfrm6_extract_output(struct xfrm_state *x, struct sk_buff *skb)
  	if (err)
  		return err;
  
@@ -17834,7 +17834,7 @@ index 2c42d83fbaa2..b5ce692d2b8a 100644
  
  static int __net_init xfrm_net_init(struct net *net)
 diff --git a/net/xfrm/xfrm_state.c b/net/xfrm/xfrm_state.c
-index 6f99fd2d966c..23ac4d2e97ac 100644
+index 6f99fd2d966c..06aab4a09f64 100644
 --- a/net/xfrm/xfrm_state.c
 +++ b/net/xfrm/xfrm_state.c
 @@ -58,6 +58,9 @@ static inline bool xfrm_state_hold_rcu(struct xfrm_state __rcu *x)
@@ -17949,7 +17949,34 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  }
  
  static DEFINE_SPINLOCK(xfrm_state_afinfo_lock);
-@@ -680,6 +726,9 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
+@@ -531,7 +577,8 @@ void xfrm_state_free(struct xfrm_state *x)
+ }
+ EXPORT_SYMBOL(xfrm_state_free);
+ 
+-static void ___xfrm_state_destroy(struct xfrm_state *x)
++static void xfrm_state_delete_tunnel(struct xfrm_state *x);
++static void xfrm_state_gc_destroy(struct xfrm_state *x)
+ {
+ 	hrtimer_cancel(&x->mtimer);
+ 	del_timer_sync(&x->rtimer);
+@@ -545,6 +592,7 @@ static void ___xfrm_state_destroy(struct xfrm_state *x)
+ 	kfree(x->preplay_esn);
+ 	if (x->type_offload)
+ 		xfrm_put_type_offload(x->type_offload);
++	xfrm_state_delete_tunnel(x);
+ 	if (x->type) {
+ 		x->type->destructor(x);
+ 		xfrm_put_type(x->type);
+@@ -569,7 +617,7 @@ static void xfrm_state_gc_task(struct work_struct *work)
+ 	synchronize_rcu();
+ 
+ 	hlist_for_each_entry_safe(x, tmp, &gc_list, gclist)
+-		___xfrm_state_destroy(x);
++		xfrm_state_gc_destroy(x);
+ }
+ 
+ static enum hrtimer_restart xfrm_timer_handler(struct hrtimer *me)
+@@ -680,6 +728,9 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
  		INIT_HLIST_NODE(&x->bysrc);
  		INIT_HLIST_NODE(&x->byspi);
  		INIT_HLIST_NODE(&x->byseq);
@@ -17959,7 +17986,7 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  		hrtimer_init(&x->mtimer, CLOCK_BOOTTIME, HRTIMER_MODE_ABS_SOFT);
  		x->mtimer.function = xfrm_timer_handler;
  		timer_setup(&x->rtimer, xfrm_replay_timer_handler, 0);
-@@ -690,6 +739,12 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
+@@ -690,6 +741,12 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
  		x->lft.hard_packet_limit = XFRM_INF;
  		x->replay_maxage = 0;
  		x->replay_maxdiff = 0;
@@ -17972,7 +17999,32 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  		x->pcpu_num = UINT_MAX;
  		spin_lock_init(&x->lock);
  	}
-@@ -769,6 +824,17 @@ int __xfrm_state_delete(struct xfrm_state *x)
+@@ -732,19 +789,14 @@ void xfrm_dev_state_free(struct xfrm_state *x)
+ }
+ #endif
+ 
+-void __xfrm_state_destroy(struct xfrm_state *x, bool sync)
++void __xfrm_state_destroy(struct xfrm_state *x)
+ {
+ 	WARN_ON(x->km.state != XFRM_STATE_DEAD);
+ 
+-	if (sync) {
+-		synchronize_rcu();
+-		___xfrm_state_destroy(x);
+-	} else {
+-		spin_lock_bh(&xfrm_state_gc_lock);
+-		hlist_add_head(&x->gclist, &xfrm_state_gc_list);
+-		spin_unlock_bh(&xfrm_state_gc_lock);
+-		schedule_work(&xfrm_state_gc_work);
+-	}
++	spin_lock_bh(&xfrm_state_gc_lock);
++	hlist_add_head(&x->gclist, &xfrm_state_gc_list);
++	spin_unlock_bh(&xfrm_state_gc_lock);
++	schedule_work(&xfrm_state_gc_work);
+ }
+ EXPORT_SYMBOL(__xfrm_state_destroy);
+ 
+@@ -769,12 +821,25 @@ int __xfrm_state_delete(struct xfrm_state *x)
  
  		if (x->id.spi)
  			hlist_del_rcu(&x->byspi);
@@ -17990,7 +18042,36 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  		net->xfrm.state_num--;
  		xfrm_nat_keepalive_state_updated(x);
  		spin_unlock(&net->xfrm.xfrm_state_lock);
-@@ -1521,6 +1587,19 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
+ 
+ 		xfrm_dev_state_delete(x);
+ 
++		xfrm_state_delete_tunnel(x);
++
+ 		/* All xfrm_state objects are created by xfrm_state_alloc.
+ 		 * The xfrm_state_alloc call gives a reference, and that
+ 		 * is what we are dropping here.
+@@ -856,7 +921,7 @@ xfrm_dev_state_flush_secctx_check(struct net *net, struct net_device *dev, bool
+ }
+ #endif
+ 
+-int xfrm_state_flush(struct net *net, u8 proto, bool task_valid, bool sync)
++int xfrm_state_flush(struct net *net, u8 proto, bool task_valid)
+ {
+ 	int i, err = 0, cnt = 0;
+ 
+@@ -878,10 +943,7 @@ int xfrm_state_flush(struct net *net, u8 proto, bool task_valid, bool sync)
+ 				err = xfrm_state_delete(x);
+ 				xfrm_audit_state_delete(x, err ? 0 : 1,
+ 							task_valid);
+-				if (sync)
+-					xfrm_state_put_sync(x);
+-				else
+-					xfrm_state_put(x);
++				xfrm_state_put(x);
+ 				if (!err)
+ 					cnt++;
+ 
+@@ -1521,6 +1583,19 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
  						  net->xfrm.state_byseq + h,
  						  x->xso.type);
  			}
@@ -18010,7 +18091,7 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  			x->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
  			hrtimer_start(&x->mtimer,
  				      ktime_set(net->xfrm.sysctl_acq_expires, 0),
-@@ -1690,6 +1769,18 @@ static void __xfrm_state_insert(struct xfrm_state *x)
+@@ -1690,6 +1765,18 @@ static void __xfrm_state_insert(struct xfrm_state *x)
  		XFRM_STATE_INSERT(byseq, &x->byseq, net->xfrm.state_byseq + h,
  				  x->xso.type);
  	}
@@ -18029,7 +18110,7 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  
  	hrtimer_start(&x->mtimer, ktime_set(1, 0), HRTIMER_MODE_REL_SOFT);
  	if (x->replay_maxage)
-@@ -1712,6 +1803,9 @@ static void __xfrm_state_bump_genids(struct xfrm_state *xnew)
+@@ -1712,6 +1799,9 @@ static void __xfrm_state_bump_genids(struct xfrm_state *xnew)
  	u32 mark = xnew->mark.v & xnew->mark.m;
  	u32 if_id = xnew->if_id;
  	u32 cpu_id = xnew->pcpu_num;
@@ -18039,7 +18120,7 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  
  	h = xfrm_dst_hash(net, &xnew->id.daddr, &xnew->props.saddr, reqid, family);
  	hlist_for_each_entry(x, net->xfrm.state_bydst+h, bydst) {
-@@ -1722,8 +1816,19 @@ static void __xfrm_state_bump_genids(struct xfrm_state *xnew)
+@@ -1722,8 +1812,19 @@ static void __xfrm_state_bump_genids(struct xfrm_state *xnew)
  		    (mark & x->mark.m) == x->mark.v &&
  		    xfrm_addr_equal(&x->id.daddr, &xnew->id.daddr, family) &&
  		    xfrm_addr_equal(&x->props.saddr, &xnew->props.saddr, family))
@@ -18059,7 +18140,7 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  }
  
  void xfrm_state_insert(struct xfrm_state *x)
-@@ -1812,6 +1917,19 @@ static struct xfrm_state *__find_acq_core(struct net *net,
+@@ -1812,6 +1913,19 @@ static struct xfrm_state *__find_acq_core(struct net *net,
  		h = xfrm_src_hash(net, daddr, saddr, family);
  		XFRM_STATE_INSERT(bysrc, &x->bysrc, net->xfrm.state_bysrc + h,
  				  x->xso.type);
@@ -18078,6 +18159,27 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
 +#endif
  
  		net->xfrm.state_num++;
+ 
+@@ -2117,14 +2231,18 @@ int xfrm_state_update(struct xfrm_state *x)
+ 	}
+ 
+ 	if (x1->km.state == XFRM_STATE_ACQ) {
+-		if (x->dir && x1->dir != x->dir)
++		if (x->dir && x1->dir != x->dir) {
++			to_put = x1;
+ 			goto out;
++		}
+ 
+ 		__xfrm_state_insert(x);
+ 		x = NULL;
+ 	} else {
+-		if (x1->dir != x->dir)
++		if (x1->dir != x->dir) {
++			to_put = x1;
+ 			goto out;
++		}
+ 	}
+ 	err = 0;
  
 @@ -2263,6 +2381,36 @@ xfrm_state_lookup_byaddr(struct net *net, u32 mark,
  }
@@ -18116,7 +18218,16 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  struct xfrm_state *
  xfrm_find_acq(struct net *net, const struct xfrm_mark *mark, u8 mode, u32 reqid,
  	      u32 if_id, u32 pcpu_num, u8 proto, const xfrm_address_t *daddr,
-@@ -2510,6 +2658,20 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high,
+@@ -2502,6 +2650,8 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high,
+ 
+ 	for (h = 0; h < range; h++) {
+ 		u32 spi = (low == high) ? low : get_random_u32_inclusive(low, high);
++		if (spi == 0)
++			goto next;
+ 		newspi = htonl(spi);
+ 
+ 		spin_lock_bh(&net->xfrm.xfrm_state_lock);
+@@ -2510,6 +2660,20 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high,
  			x->id.spi = newspi;
  			h = xfrm_spi_hash(net, &x->id.daddr, newspi, x->id.proto, x->props.family);
  			XFRM_STATE_INSERT(byspi, &x->byspi, net->xfrm.state_byspi + h, x->xso.type);
@@ -18137,6 +18248,38 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  			spin_unlock_bh(&net->xfrm.xfrm_state_lock);
  			err = 0;
  			goto unlock;
+@@ -2517,6 +2681,7 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high,
+ 		xfrm_state_put(x0);
+ 		spin_unlock_bh(&net->xfrm.xfrm_state_lock);
+ 
++next:
+ 		if (signal_pending(current)) {
+ 			err = -ERESTARTSYS;
+ 			goto unlock;
+@@ -3001,20 +3166,17 @@ void xfrm_flush_gc(void)
+ }
+ EXPORT_SYMBOL(xfrm_flush_gc);
+ 
+-/* Temporarily located here until net/xfrm/xfrm_tunnel.c is created */
+-void xfrm_state_delete_tunnel(struct xfrm_state *x)
++static void xfrm_state_delete_tunnel(struct xfrm_state *x)
+ {
+ 	if (x->tunnel) {
+ 		struct xfrm_state *t = x->tunnel;
+ 
+-		if (atomic_read(&t->tunnel_users) == 2)
++		if (atomic_dec_return(&t->tunnel_users) == 1)
+ 			xfrm_state_delete(t);
+-		atomic_dec(&t->tunnel_users);
+-		xfrm_state_put_sync(t);
++		xfrm_state_put(t);
+ 		x->tunnel = NULL;
+ 	}
+ }
+-EXPORT_SYMBOL(xfrm_state_delete_tunnel);
+ 
+ u32 xfrm_state_mtu(struct xfrm_state *x, int mtu)
+ {
 @@ -3183,6 +3345,12 @@ int __net_init xfrm_state_init(struct net *net)
  	net->xfrm.state_byseq = xfrm_hash_alloc(sz);
  	if (!net->xfrm.state_byseq)
@@ -18161,6 +18304,16 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  	xfrm_hash_free(net->xfrm.state_byseq, sz);
  out_byseq:
  	xfrm_hash_free(net->xfrm.state_byspi, sz);
+@@ -3214,8 +3386,8 @@ void xfrm_state_fini(struct net *net)
+ 	unsigned int sz;
+ 
+ 	flush_work(&net->xfrm.state_hash_work);
++	xfrm_state_flush(net, 0, false);
+ 	flush_work(&xfrm_state_gc_work);
+-	xfrm_state_flush(net, 0, false, true);
+ 
+ 	WARN_ON(!list_empty(&net->xfrm.state_all));
+ 
 @@ -3228,6 +3400,10 @@ void xfrm_state_fini(struct net *net)
  	xfrm_hash_free(net->xfrm.state_bysrc, sz);
  	WARN_ON(!hlist_empty(net->xfrm.state_bydst));
@@ -18173,10 +18326,23 @@ index 6f99fd2d966c..23ac4d2e97ac 100644
  }
  
 diff --git a/net/xfrm/xfrm_user.c b/net/xfrm/xfrm_user.c
-index d41e5642625e..0f8543738ab2 100644
+index d41e5642625e..8cadb2562e03 100644
 --- a/net/xfrm/xfrm_user.c
 +++ b/net/xfrm/xfrm_user.c
-@@ -1067,6 +1067,10 @@ static void copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
+@@ -893,8 +893,11 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
+ 
+ 	if (attrs[XFRMA_SA_PCPU]) {
+ 		x->pcpu_num = nla_get_u32(attrs[XFRMA_SA_PCPU]);
+-		if (x->pcpu_num >= num_possible_cpus())
++		if (x->pcpu_num >= num_possible_cpus()) {
++			err = -ERANGE;
++			NL_SET_ERR_MSG(extack, "pCPU number too big");
+ 			goto error;
++		}
+ 	}
+ 
+ 	err = __xfrm_init_state(x, false, attrs[XFRMA_OFFLOAD_DEV], extack);
+@@ -1067,6 +1070,10 @@ static void copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
  	if (x->xso.dev)
  		xfrm_dev_state_update_stats(x);
  	memcpy(&p->curlft, &x->curlft, sizeof(p->curlft));
@@ -18187,6 +18353,12 @@ index d41e5642625e..0f8543738ab2 100644
  	put_unaligned(x->stats.replay_window, &p->stats.replay_window);
  	put_unaligned(x->stats.replay, &p->stats.replay);
  	put_unaligned(x->stats.integrity_failed, &p->stats.integrity_failed);
--- 
-2.47.3
-
+@@ -2568,7 +2575,7 @@ static int xfrm_flush_sa(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 	struct xfrm_usersa_flush *p = nlmsg_data(nlh);
+ 	int err;
+ 
+-	err = xfrm_state_flush(net, p->proto, true, false);
++	err = xfrm_state_flush(net, p->proto, true);
+ 	if (err) {
+ 		if (err == -ESRCH) /* empty table */
+ 			return 0;

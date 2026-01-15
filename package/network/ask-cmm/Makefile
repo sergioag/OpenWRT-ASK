@@ -12,8 +12,8 @@ PKG_VERSION:=17.03.1
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK.git
-PKG_SOURCE_VERSION:=beefead3fc638a79e16c237c99182628f8b96cc9
+PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK
+PKG_SOURCE_VERSION:=mono-patched
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
@@ -50,6 +50,7 @@ endef
 
 # Build flags per NXP ASK documentation
 TARGET_CFLAGS += \
+	-Wno-error \
 	-DLS1043 \
 	-DFLOW_STATS \
 	-DWIFI_ENABLE \
@@ -62,17 +63,16 @@ TARGET_CFLAGS += \
 
 define Package/ask-cmm/install
 	$(INSTALL_DIR) $(1)/usr/sbin
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/cmm $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/cmm $(1)/usr/sbin/
+
+	$(INSTALL_DIR) $(1)/usr/lib
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libcmm.so* $(1)/usr/lib/
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/fastforward $(1)/etc/config/
 
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/cmm.init $(1)/etc/init.d/cmm
-
-	$(INSTALL_DIR) $(1)/etc/sysctl.d
-	$(INSTALL_DATA) ./files/sysctl-nf-conntrack.conf $(1)/etc/sysctl.d/11-nf-conntrack.conf
-	$(INSTALL_DATA) ./files/sysctl-br-netfilter.conf $(1)/etc/sysctl.d/11-br-netfilter.conf
 endef
 
 $(eval $(call BuildPackage,ask-cmm))
