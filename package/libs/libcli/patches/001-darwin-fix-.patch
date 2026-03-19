@@ -1,0 +1,15 @@
+--- a/Makefile    2026-03-15 00:58:14.950112346 +0100
++++ b/Makefile    2026-03-15 00:58:21.517672963 +0100
+@@ -24,12 +24,8 @@
+ override LDFLAGS += -shared
+ override LIBPATH += -L.
+ 
+-ifeq ($(UNAME),Darwin)
+-override LDFLAGS += -Wl,-install_name,$(LIB).$(MAJOR).$(MINOR)
+-else
+ override LDFLAGS += -Wl,-soname,$(LIB).$(MAJOR).$(MINOR)
+ LIBS = -lcrypt
+-endif
+ 
+ ifeq (1,$(DYNAMIC_LIB))
+ TARGET_LIBS += $(LIB)
