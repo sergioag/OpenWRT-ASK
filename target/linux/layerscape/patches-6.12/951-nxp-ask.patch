@@ -11589,16 +11589,16 @@ index 9b8ddf644..c9b16e6e3 100644
  	case PPPIOCSACTIVE:
 @@ -3491,9 +3522,17 @@ ppp_connect_channel(struct channel *pch, int unit)
  		goto out;
- 	write_lock_bh(&pch->upl);
+ 	spin_lock(&pch->upl);
  	ret = -EINVAL;
 +#if defined(CONFIG_CPE_FAST_PATH)
-+	if (pch->ppp ||
++	if (rcu_dereference_protected(pch->ppp, lockdep_is_held(&pch->upl)) ||
 +	    rcu_dereference_protected(pch->bridge, lockdep_is_held(&pch->upl))) {
-+		write_unlock_bh(&pch->upl);
++		spin_unlock(&pch->upl);
 +		goto out;
 +	}
 +#else
- 	if (pch->ppp ||
+ 	if (rcu_dereference_protected(pch->ppp, lockdep_is_held(&pch->upl)) ||
  	    rcu_dereference_protected(pch->bridge, lockdep_is_held(&pch->upl)))
  		goto outl;
 +#endif
@@ -11608,7 +11608,7 @@ index 9b8ddf644..c9b16e6e3 100644
 @@ -3523,6 +3562,14 @@ ppp_connect_channel(struct channel *pch, int unit)
  
   outl:
- 	write_unlock_bh(&pch->upl);
+ 	spin_unlock(&pch->upl);
 +#if defined(CONFIG_CPE_FAST_PATH)
 +	if ((ppp->dev) && (!ppp->closing)) {
 +		rtnl_lock();
@@ -13477,8 +13477,8 @@ index 9e3116b6f..6b6b3623e 100644
  	     skb->protocol == htons(ETH_P_RARP))) {
 @@ -210,6 +218,10 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
  
- 		if (now != dst->used)
- 			dst->used = now;
+ 		if (now != READ_ONCE(dst->used))
+ 			WRITE_ONCE(dst->used, now);
 +#if defined(CONFIG_CPE_FAST_PATH)
 +			/* Used by ABM module */
 +			skb->abm_ff = 1;
