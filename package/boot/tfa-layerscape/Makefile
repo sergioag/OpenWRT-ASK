@@ -21,7 +21,7 @@ include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/trusted-firmware-a.mk
 include $(INCLUDE_DIR)/package.mk
 
-HOST_CFLAGS += -Wall -Werror -pedantic -std=c99
+HOST_CFLAGS += -Wall -pedantic -std=c99
 define Host/Compile
 	$(MAKE) -C \
 		$(HOST_BUILD_DIR)/tools/fiptool \
