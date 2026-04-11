@@ -14,8 +14,8 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK
-PKG_SOURCE_VERSION:=mono-patched
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_VERSION:=master
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=GPL-2.0-or-later
@@ -27,7 +27,7 @@ define KernelPackage/ask-cdx
   SUBMENU:=Network Devices
   TITLE:=NXP ASK CDX fast path module
   DEPENDS:=@TARGET_layerscape
-  FILES:=$(PKG_BUILD_DIR)/cdx-$(PKG_VERSION)/cdx.ko
+  FILES:=$(PKG_BUILD_DIR)/cdx/cdx.ko
 endef
 
 define KernelPackage/ask-cdx/description
@@ -37,7 +37,7 @@ define KernelPackage/ask-cdx/description
 endef
 
 # Build in the cdx subdirectory
-CDX_DIR:=$(PKG_BUILD_DIR)/cdx-$(PKG_VERSION)
+CDX_DIR:=$(PKG_BUILD_DIR)/cdx
 
 # Platform and feature flags
 CDX_MAKE_OPTS:= \

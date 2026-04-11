@@ -13,8 +13,8 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK
-PKG_SOURCE_VERSION:=mono-patched
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_VERSION:=master
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=GPL-2.0-or-later
@@ -45,7 +45,7 @@ endef
 # The source is in cmm-X.XX.X subdirectory
 define Build/Prepare
 	$(call Build/Prepare/Default)
-	$(CP) $(PKG_BUILD_DIR)/cmm-$(PKG_VERSION)/* $(PKG_BUILD_DIR)/
+	$(CP) $(PKG_BUILD_DIR)/cmm/* $(PKG_BUILD_DIR)/
 endef
 
 # Build flags per NXP ASK documentation

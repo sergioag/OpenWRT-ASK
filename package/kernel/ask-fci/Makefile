@@ -14,8 +14,8 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK
-PKG_SOURCE_VERSION:=mono-patched
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_VERSION:=master
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=GPL-2.0-or-later
@@ -27,7 +27,7 @@ define KernelPackage/ask-fci
   SUBMENU:=Network Devices
   TITLE:=NXP ASK FCI fast path control interface
   DEPENDS:=@TARGET_layerscape +kmod-ask-cdx
-  FILES:=$(PKG_BUILD_DIR)/fci-$(PKG_VERSION)/fci.ko
+  FILES:=$(PKG_BUILD_DIR)/fci/fci.ko
 endef
 
 define KernelPackage/ask-fci/description
@@ -36,7 +36,7 @@ define KernelPackage/ask-fci/description
 endef
 
 # Build in the fci subdirectory
-FCI_DIR:=$(PKG_BUILD_DIR)/fci-$(PKG_VERSION)
+FCI_DIR:=$(PKG_BUILD_DIR)/fci
 
 define Build/Compile
 	$(KERNEL_MAKE) \

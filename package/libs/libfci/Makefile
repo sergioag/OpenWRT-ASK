@@ -13,8 +13,8 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK
-PKG_SOURCE_VERSION:=mono-patched
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_VERSION:=master
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=GPL-2.0-or-later
@@ -42,7 +42,7 @@ endef
 # The library source is in fci-X.XX.XX/lib subdirectory
 define Build/Prepare
 	$(call Build/Prepare/Default)
-	$(CP) $(PKG_BUILD_DIR)/fci-$(PKG_VERSION)/lib/* $(PKG_BUILD_DIR)/
+	$(CP) $(PKG_BUILD_DIR)/fci/lib/* $(PKG_BUILD_DIR)/
 	touch $(PKG_BUILD_DIR)/README
 endef
 
