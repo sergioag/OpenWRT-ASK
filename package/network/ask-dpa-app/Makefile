@@ -13,8 +13,8 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK.git
-PKG_SOURCE_VERSION:=beefead3fc638a79e16c237c99182628f8b96cc9
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_VERSION:=master
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=GPL-2.0-or-later
@@ -37,10 +37,9 @@ define Package/ask-dpa-app/description
   Kit (ASK).
 endef
 
-# The source is in dpa_app-X.XX.X subdirectory
+# The source is in dpa_app subdirectory
 define Build/Prepare
 	$(call Build/Prepare/Default)
-	$(CP) $(PKG_BUILD_DIR)/dpa_app-$(PKG_VERSION)/* $(PKG_BUILD_DIR)/
 endef
 
 # Build flags per NXP ASK documentation - must match CDX flags
@@ -61,7 +60,7 @@ TARGET_CFLAGS += \
 TARGET_LDFLAGS += -lfmc -lfm-arm -lstdc++ -lxml2 -lpthread -lcli
 
 define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
+	$(MAKE) -C $(PKG_BUILD_DIR)/dpa_app \
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS)" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
@@ -69,11 +68,11 @@ endef
 
 define Package/ask-dpa-app/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/dpa_app $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/dpa_app/dpa_app $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/dpa_app_wrapper $(1)/usr/bin/
 
 	$(INSTALL_DIR) $(1)/etc
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/etc/*.xml $(1)/etc/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/dpa_app/files/etc/*.xml $(1)/etc/
 	$(INSTALL_DATA) ./files/cdx_cfg.xml $(1)/etc/
 endef
 

@@ -14,8 +14,8 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/we-are-mono/ASK
-PKG_SOURCE_VERSION:=mono-patched
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_VERSION:=master
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=GPL-2.0-or-later
@@ -27,7 +27,7 @@ define KernelPackage/ask-auto-bridge
   SUBMENU:=Network Devices
   TITLE:=NXP ASK automatic bridge module
   DEPENDS:=@TARGET_layerscape
-  FILES:=$(PKG_BUILD_DIR)/auto_bridge-$(PKG_VERSION)/auto_bridge.ko
+  FILES:=$(PKG_BUILD_DIR)/auto_bridge/auto_bridge.ko
   AUTOLOAD:=$(call AutoProbe,auto_bridge)
 endef
 
@@ -37,7 +37,7 @@ define KernelPackage/ask-auto-bridge/description
 endef
 
 # Build in the auto_bridge subdirectory
-BRIDGE_DIR:=$(PKG_BUILD_DIR)/auto_bridge-$(PKG_VERSION)
+BRIDGE_DIR:=$(PKG_BUILD_DIR)/auto_bridge
 
 define Build/Compile
 	$(KERNEL_MAKE) \
