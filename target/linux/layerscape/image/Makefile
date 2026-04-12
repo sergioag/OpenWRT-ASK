@@ -94,6 +94,19 @@ define Build/mono-mkfs-ext4
 		$(if $(CONFIG_TARGET_EXT4_RESERVED_PCT),$(CONFIG_TARGET_EXT4_RESERVED_PCT),0)
 endef
 
+define Build/mono-sysupgrade-tar
+	$(TOPDIR)/target/linux/layerscape/image/gen_ext4_resizable.sh \
+		$@.rootfs $(ROOTFS_PARTSIZE) $(CONFIG_TARGET_EXT4_BLOCKSIZE) \
+		$(TARGET_DIR) \
+		$(if $(CONFIG_TARGET_EXT4_RESERVED_PCT),$(CONFIG_TARGET_EXT4_RESERVED_PCT),0)
+	debugfs -w -R "mkdir boot" $@.rootfs 2>/dev/null || true
+	debugfs -w -R "write $(IMAGE_KERNEL) boot/kernel.itb" $@.rootfs
+	sh $(TOPDIR)/scripts/sysupgrade-tar.sh \
+		--board $(if $(BOARD_NAME),$(BOARD_NAME),$(DEVICE_NAME)) \
+		--rootfs $@.rootfs \
+		$@
+endef
+
 include $(SUBTARGET).mk
 
 $(eval $(call BuildImage))
