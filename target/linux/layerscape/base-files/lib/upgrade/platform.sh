@@ -79,7 +79,7 @@ platform_copy_config_sdboot() {
 }
 
 platform_copy_config_nor() {
-	local mtd_dev="/dev/mtd5"
+	local mtd_dev="/dev/mtd6"
 	local backup_file="$UPGRADE_BACKUP"
 
 	[ -f "$backup_file" ] || {
@@ -87,7 +87,7 @@ platform_copy_config_nor() {
 		return 1
 	}
 
-	local size=$(stat -c %s "$backup_file")
+	local size=$(wc -c "$backup_file" | awk '{print $1}')
 
 	echo "Saving config backup to NOR flash ($size bytes)..."
 

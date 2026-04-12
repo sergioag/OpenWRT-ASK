@@ -5,8 +5,8 @@
 #
 
 do_restore_config_nor() {
-	local mtdblock="/dev/mtdblock5"
-	local mtd="/dev/mtd5"
+	local mtdblock="/dev/mtdblock6"
+	local mtd="/dev/mtd6"
 
 	# Only run on Mono Gateway
 	[ -e /tmp/sysinfo/board_name ] || return
