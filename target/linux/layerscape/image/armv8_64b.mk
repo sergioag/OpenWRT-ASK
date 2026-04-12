@@ -415,7 +415,7 @@ define Device/mono_gateway-dk
   FILESYSTEMS := ext4
   IMAGES := rootfs.ext4 sysupgrade.bin
   IMAGE/rootfs.ext4 := mono-mkfs-ext4 | mono-add-kernel
-  IMAGE/sysupgrade.bin := mono-mkfs-ext4 | mono-add-kernel | sysupgrade-tar rootfs | append-metadata
+  IMAGE/sysupgrade.bin := mono-sysupgrade-tar | append-metadata
   SUPPORTED_DEVICES := mono,gateway-dk
   DEVICE_PACKAGES += \
     kmod-ask-cdx \
