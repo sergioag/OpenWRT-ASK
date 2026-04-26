@@ -14,7 +14,11 @@ RESERVED_PCT="${5:-0}"
 TMPFILE="${OUTPUT}.tmp"
 
 # Calculate actual content size + 50% headroom for filesystem overhead
+ifeq ($(UNAME),Darwin)
+CONTENT_SIZE=$(gdu -sb "$SOURCE_DIR" | cut -f1)
+else
 CONTENT_SIZE=$(du -sb "$SOURCE_DIR" | cut -f1)
+fi
 INITIAL_SIZE=$(( CONTENT_SIZE * 150 / 100 ))
 
 # Minimum 128MB to ensure proper metadata allocation
